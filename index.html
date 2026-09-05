@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WHITE BLANK — 白い地下迷宮</title>
+<link rel="stylesheet" href="./src/style.css">
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js" } }
+</script>
+</head>
+<body>
+<canvas id="view"></canvas>
+
+<div id="vignette"></div>
+<div id="grain"></div>
+
+<div id="hud" hidden>
+  <div id="crosshair"></div>
+  <div id="readout">
+    <div class="row"><span class="k">階層</span><span class="v" id="r-depth">0</span></div>
+    <div class="row"><span class="k">歩数</span><span class="v" id="r-steps">0</span></div>
+    <div class="row"><span class="k">気配</span><span class="v" id="r-sense">—</span></div>
+  </div>
+  <div id="toast"></div>
+</div>
+
+<div id="overlay">
+  <div id="panel">
+    <h1>WHITE BLANK</h1>
+    <p class="sub">白い地下迷宮 ／ 無限に続く空間の、たったひとつの扉をさがす</p>
+
+    <div id="seedbox">
+      <label for="seedinput">世界の種</label>
+      <input id="seedinput" type="text" spellcheck="false" autocomplete="off">
+      <button id="reroll" type="button" title="別の世界へ">↻</button>
+    </div>
+
+    <button id="start" type="button">はじめる</button>
+
+    <ul id="keys">
+      <li><b>W A S D</b><span>歩く</span></li>
+      <li><b>マウス</b><span>視線</span></li>
+      <li><b>Shift</b><span>急ぐ</span></li>
+      <li><b>Space</b><span>跳ぶ</span></li>
+      <li><b>E</b><span>壁に印を刻む／消す</span></li>
+      <li><b>Esc</b><span>中断</span></li>
+    </ul>
+    <p class="note">同じ種なら、同じ世界。戻れば、さっきと同じ通路がそこにある。</p>
+  </div>
+</div>
+
+<div id="clear" hidden>
+  <div class="c-inner">
+    <h2>扉をくぐった</h2>
+    <p id="clear-stat"></p>
+    <button id="next" type="button">つぎの世界へ</button>
+  </div>
+</div>
+
+<div id="loading" hidden><span>空間を組み立てています…</span></div>
+
+<script type="module" src="./src/game.js"></script>
+</body>
+</html>
