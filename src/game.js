@@ -200,7 +200,8 @@ function flushQueue(budget) {
  */
 function ensureAround(x, y, z) {
   const kx = fdiv(Math.floor(x / CELL), CW), kz = fdiv(Math.floor(z / CELL), CD);
-  for (const dy of [1, 0, -1, -2]) {
+  // 読み込む半径からはみ出す所は作らない。作った端から捨てることになる
+  for (const dy of [0, -1, 1]) {
     const ky = fdiv(Math.floor(y / LEVEL) + dy * CY, CY);
     for (const dx of [0, -1, 1]) for (const dz of [0, -1, 1]) {
       if (dy !== 0 && (dx || dz)) continue;
@@ -392,7 +393,7 @@ function toast(msg) {
 }
 
 // ── 一巡 ─────────────────────────────────────────────────
-let last = performance.now(), hudT = 0, cleared = false;
+let last = performance.now(), hudT = 0, forgetT = 12, cleared = false;
 const tmpQ = new THREE.Quaternion(), tmpV = new THREE.Vector3();
 
 function frame(now) {
@@ -484,7 +485,7 @@ function update(dt) {
   hudT -= dt;
   if (hudT <= 0) {
     hudT = 0.2;
-    $('r-depth').textContent = (-cy >= 0 ? '−' : '+') + Math.abs(cy);
+    $('r-depth').textContent = (cy > 0 ? '+' : cy < 0 ? '−' : '') + Math.abs(cy);
     $('r-steps').textContent = Math.floor(walkedTotal / 0.78);
     $('r-sense').textContent =
       dgoal > 95 ? '—' : dgoal > 46 ? '遠い' : dgoal > 21 ? 'かすか' : dgoal > 8 ? '近い' : 'すぐそこ';
@@ -492,7 +493,8 @@ function update(dt) {
   if (toastT > 0) { toastT -= dt; if (toastT <= 0) $('toast').classList.remove('show'); }
 
   // ときどき、遠い記憶を捨てる
-  if ((walkedTotal | 0) % 97 === 0) world.forgetFar(cx, cy, cz, RENDER_R + 3);
+  forgetT -= dt;
+  if (forgetT <= 0) { forgetT = 12; world.forgetFar(cx, cy, cz, RENDER_R + 3); }
 }
 
 // ── 始まりと終わり ───────────────────────────────────────
