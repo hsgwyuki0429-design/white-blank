@@ -5,7 +5,9 @@
 
 import * as THREE from 'three';
 import { World, CW, CY, CD, CELL, LEVEL, fdiv, isLowCeil, inBig as isBigAt,
-         isBridge, roomOf, shaftOf, stairPlan, V_STAIR } from './world.js';
+         isBridge, roomOf, shaftOf, stairPlan, V_STAIR,
+         findLandmarks, landmarkOf, LM_NAMES, LM_CATHEDRAL, LM_COMPRESSION,
+         LM_STAIRHALL, LM_STACKED, LM_NESTED, LM_DESCENT } from './world.js';
 import { buildChunk } from './mesher.js';
 import { Colliders, step as physStep, EYE } from './physics.js';
 import { Sound } from './audio.js';
@@ -508,6 +510,40 @@ function update(dt) {
   if (forgetT <= 0) { forgetT = 12; world.forgetFar(cx, cy, cz, RENDER_R + 3); }
 }
 
+/**
+ * 開発中の確認用。名前を指定してランドマークの見せ場に立つ。
+ * ふつうに遊ぶときは使わない。URLに ?landmark=cathedral のように付ける。
+ */
+function jumpToLandmark(name) {
+  const kind = LM_NAMES.indexOf(name);
+  const list = findLandmarks(world.seed, kind < 0 ? undefined : kind, 9);
+  if (!list.length) return null;
+  list.sort((a, b) => (a.x0 * a.x0 + a.z0 * a.z0) - (b.x0 * b.x0 + b.z0 * b.z0));
+  const L = list[0];
+  const g = L.gates[0];
+  // 入口のセルに立ち、空間の真ん中を向く。
+  // 広間は少し中へ進んだほうが、柱の繰り返しが見える。
+  const step = L.kind === LM_CATHEDRAL ? 2 : L.kind === LM_NESTED ? 1 : 0;
+  const gx = L.x0 + g.ix - DXV[g.dir] * step, gz = L.z0 + g.iz - DZV[g.dir] * step;
+  const gy = L.y0 + g.iy;
+  const cx = (L.x0 + L.x1 + 1) / 2, cz = (L.z0 + L.z1 + 1) / 2;
+  // 階段の大広間は、壁づたいに見上げたほうが階段の重なりが見える
+  const face = Math.atan2(-(cx - gx - 0.5), -(cz - gz - 0.5));
+  const yaw = L.kind === LM_DESCENT ? Math.atan2(-DZV[g.dir], DXV[g.dir])
+            : L.kind === LM_STAIRHALL ? face + 0.85 : face;
+  const pitch = L.kind === LM_DESCENT ? -0.34 : L.kind === LM_STAIRHALL ? 0.30
+              : L.kind === LM_STACKED ? 0.18 : 0.04;
+  body.x = (gx + 0.5) * CELL; body.y = gy * LEVEL + 0.1; body.z = (gz + 0.5) * CELL;
+  body.vx = body.vy = body.vz = 0;
+  yawSet(yaw, pitch);
+  head.position.set(body.x, body.y + EYE, body.z);
+  wantChunks(body.x, body.y, body.z);
+  flushQueue(999);
+  return { kind: LM_NAMES[L.kind], at: [L.x0, L.y0, L.z0], size: [L.W, L.D, L.H] };
+}
+const DXV = [1, -1, 0, 0, 0, 0], DZV = [0, 0, 0, 0, 1, -1];
+function yawSet(y, p) { yaw = y; pitch = p; }
+
 // ── 始まりと終わり ───────────────────────────────────────
 function setupWorld(seed) {
   clearWorld();
@@ -531,6 +567,10 @@ function setupWorld(seed) {
   flushQueue(999);
   $('seedinput').value = seedName(seed);
   document.body.dataset.seed = seed;
+
+  // 開発中の確認用の抜け道
+  const want = new URLSearchParams(location.search).get('landmark');
+  if (want) jumpToLandmark(want);
 }
 
 function begin() {
@@ -632,6 +672,11 @@ window.__wb = {
     const A = roomOf(world, x, y, z), v = world.vfeat(x, y, z);
     return v && v.kind === V_STAIR ? stairPlan(A, v) : null;
   },
+  /** 開発中の確認用。ランドマークの入口へ直接立つ。 */
+  jump(name) { return jumpToLandmark(name); },
+  landmarks: (name) => findLandmarks(world.seed,
+    name === undefined ? undefined : LM_NAMES.indexOf(name), 8),
+
   /** そのリンクを通り抜けるとき、狙うべき点（喉の真ん中）。 */
   gate(x, y, z, d) {
     const cx = (x + 0.5) * CELL, cz = (z + 0.5) * CELL;

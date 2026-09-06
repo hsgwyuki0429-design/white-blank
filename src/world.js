@@ -14,41 +14,17 @@
 
 import { hash32, rngFor, shuffle } from './rng.js';
 
-export const CW = 6, CY = 4, CD = 6;        // 1チャンクのセル数 (x, y, z)
-export const NCELL = CW * CY * CD;
-export const CELL = 5.6;                     // セルの水平寸法 (m)
-export const LEVEL = 2.7;                    // 1階層の高さ (m)
-export const SLAB = 0.28;                    // 床と天井の厚み (m)
-export const CEIL_STD = LEVEL - SLAB;        // ふつうの天井までの高さ
-export const CEIL_LOW = 1.94;                // 突然かがむことになる天井（背丈1.74がやっと通る）
-
-// 空洞は「箱の合併」でできている。
-//   部屋の箱   … セルの中に、まわりの岩を残して彫った直方体
-//   喉の箱     … 隣の部屋とのあいだの岩を貫く通り道
-//   縦穴の箱   … 床と天井の板を貫く穴
-// 部屋はセルの境界から必ず WALL だけ内側に引っこむ。
-// だから隣り合う部屋のあいだには必ず岩の厚みがあり、
-// 壁が薄板になって端が宙で切れる、ということが起こらない。
-export const WALL = 0.50;                    // 部屋のふちに残す岩の厚み (m)
-export const ROOM_MAX = CELL - WALL * 2;     // いちばん広い部屋 (4.6m)
-export const ROOM_MIN = 1.95;                // いちばん狭い通路
-export const RISE_T = 0.80;                  // 階段が部屋のどこまでで登りきるか
-
-// 方向 0:+X 1:-X 2:+Y 3:-Y 4:+Z 5:-Z
-export const DX = [1, -1, 0, 0, 0, 0];
-export const DY = [0, 0, 1, -1, 0, 0];
-export const DZ = [0, 0, 0, 0, 1, -1];
-export const OPP = [1, 0, 3, 2, 5, 4];
-const HDIRS = [0, 1, 4, 5];                  // 水平4方向
-
-// 縦のつなぎ方
-export const V_SHAFT = 0;   // 落下穴。床にあいた四角い穴
-export const V_STAIR = 1;   // 階段か斜路。登れる
-export const V_OPEN = 2;    // 床そのものがない。吹き抜け
-
-const fdiv = (a, b) => Math.floor(a / b);
-const fmod = (a, b) => ((a % b) + b) % b;
-export const idx = (x, y, z) => (y * CD + z) * CW + x;
+export * from './dims.js';
+import {
+  CW, CY, CD, NCELL, CELL, LEVEL, SLAB, CEIL_STD, CEIL_LOW,
+  WALL, ROOM_MAX, ROOM_MIN, RISE_T, LANDING,
+  DX, DY, DZ, OPP, HDIRS, V_SHAFT, V_STAIR, V_OPEN,
+  fdiv, fmod, idx, MIN_GAP, MIN_HEAD, PARAPET, PARAPET_T,
+} from './dims.js';
+import {
+  landmarkOf, inLandmark, lmRock, lmLinked, lmForceOpen, lmVFeat, lmRoom, lmSill, lmSolids,
+} from './landmarks.js';
+export * from './landmarks.js';
 
 // ─── 座標だけで決まるもの ────────────────────────────────────────
 
@@ -72,12 +48,15 @@ export function voidBox(seed, gx, gz) {
 }
 
 export function inVoid(seed, gx, gy, gz) {
+  if (inLandmark(seed, gx, gy, gz)) return false;      // ランドマークが優先
   const b = voidBox(seed, gx, gz);
   return !!b && gx >= b.x0 && gx <= b.x1 && gz >= b.z0 && gz <= b.z1 && gy >= b.y0 && gy <= b.y1;
 }
 
 /** そのセルの天井までの高さ。低い天井のセルは上とつながれない（後で効いてくる）。 */
 export function ceilHeight(seed, gx, gy, gz) {
+  const lm = lmRoom(seed, gx, gy, gz);
+  if (lm) return lm.ceil;
   if (inBig(seed, gx, gy, gz)) return CEIL_STD;
   return (hash32(seed, gx, gy, gz, 0x10C0) % 100) < 13 ? CEIL_LOW : CEIL_STD;
 }
@@ -104,6 +83,7 @@ export function chasmBox(seed, gx, gz) {
 }
 
 export function inChasm(seed, gx, gy, gz) {
+  if (inLandmark(seed, gx, gy, gz)) return false;      // ランドマークが優先
   const b = chasmBox(seed, gx, gz);
   return !!b && gx >= b.x0 && gx <= b.x1 && gz >= b.z0 && gz <= b.z1 && gy >= b.y0 && gy <= b.y1;
 }
@@ -122,8 +102,9 @@ export const inBig = (seed, gx, gy, gz) =>
   inVoid(seed, gx, gy, gz) || inChasm(seed, gx, gy, gz);
 
 /** 橋の欄干。越えられないが、見わたせる。裂け目に沿う向きの口だけ持ち上げる。 */
-export const PARAPET = 1.28;
 export function linkSill(seed, gx, gy, gz, d) {
+  const ls = lmSill(seed, gx, gy, gz, d);
+  if (ls) return ls;
   if (d > 1) return 0;                                    // 裂け目に沿う向きだけ
   if (isBridge(seed, gx, gy, gz) || isBridge(seed, gx + DX[d], gy, gz)) return PARAPET;
   return 0;
@@ -136,6 +117,15 @@ export const walkable = (seed, gx, gy, gz, d) => linkSill(seed, gx, gy, gz, d) <
  * 床なしだけは書き換えない——上下のチャンクが独立に同じ答えを出す必要があるから。
  */
 export function baseVFeat(seed, gx, gy, gz) {
+  const lv = lmVFeat(seed, gx, gy, gz);
+  if (lv) return lv;
+  if (inLandmark(seed, gx, gy, gz)) return { kind: V_SHAFT, corner: 0 };
+  // ランドマークの戸口をまたいだ先が、床のない吹き抜けであってはいけない。
+  // 出たとたんに落ちる、では出入口の意味がない。
+  if (lmForceOpen(seed, gx, gy + 1, gz)) {
+    const h = hash32(seed, gx, gy, gz, 0x57A1);
+    return { kind: V_SHAFT, corner: (h >>> 9) & 3 };
+  }
   if (inVoid(seed, gx, gy, gz) && inVoid(seed, gx, gy + 1, gz)) return { kind: V_OPEN };
   if (inChasm(seed, gx, gy, gz) && inChasm(seed, gx, gy + 1, gz)) return { kind: V_OPEN };
   const h = hash32(seed, gx, gy, gz, 0x57A1);
@@ -155,13 +145,22 @@ export function hasFloorBelow(seed, gx, gy, gz) {
  * 大きさは3セル角のかたまりごとに決めるので、通路は何セルか同じ幅で続き、
  * かたまりの境で変わる。変わるところが、そのまま戸口になる。
  */
+/**
+ * 通路の幅は、走る向きに沿って変えない。
+ * 途中で理由もなく狭まると、掘った通路ではなく凸凹の壁に見えてしまう。
+ * だから幅は「その通路がどの高さの、どの筋か」だけで決まる。
+ */
+function corridorWidth(seed, axis, gy, perp) {
+  return ROOM_MIN + ((hash32(seed, axis, gy, perp, 0x2C00) % 128) / 128) * 1.05;
+}
+
 export function roomSize(seed, gx, gy, gz, link) {
   if (inBig(seed, gx, gy, gz)) return { w: ROOM_MAX, d: ROOM_MAX };
   const hasX = (link & 3) !== 0, hasZ = (link & 48) !== 0;
   const h = hash32(seed, fdiv(gx, 3), gy, fdiv(gz, 3), 0x2100 + (hasX ? 1 : 0) + (hasZ ? 2 : 0));
   const r1 = (h % 128) / 128, r2 = ((h >>> 9) % 128) / 128;
-  if (hasX && !hasZ) return { w: ROOM_MAX, d: ROOM_MIN + r1 * 1.05 };
-  if (hasZ && !hasX) return { w: ROOM_MIN + r1 * 1.05, d: ROOM_MAX };
+  if (hasX && !hasZ) return { w: ROOM_MAX, d: corridorWidth(seed, 0, gy, gz) };
+  if (hasZ && !hasX) return { w: corridorWidth(seed, 1, gy, gx), d: ROOM_MAX };
   if (hasX && hasZ) {
     const big = ((h >>> 18) % 100) < 38;
     return big ? { w: ROOM_MAX, d: ROOM_MAX }
@@ -174,18 +173,27 @@ export function roomSize(seed, gx, gy, gz, link) {
 // すべて世界座標の直方体。y0/y1 は床の上面と天井の下面。
 
 /** セルの中に彫られた部屋。 */
-export const PARAPET_T = 0.46;     // 橋の欄干の厚み
-export const LANDING = 0.95;       // 上りきった先に残す踊り場の奥行き
 
-/** 階段の向き。部屋の形より先に決まっていないと堂々めぐりになる。 */
-export function stairAxis(link, v) {
-  const hx = (link & 3) !== 0, hz = (link & 48) !== 0;
-  let dir = v.dir;
-  if (hx !== hz) {
-    const back = hx ? ((link & 1) ? 0 : 1) : ((link & 16) ? 4 : 5);
-    dir = OPP[back];
-    if (link & (1 << dir)) dir = back;
+/**
+ * 階段の向き。部屋の形より先に決まっていないと堂々めぐりになる。
+ *
+ * 誰かが「上の階へ行きたいから」架けた階段に見えてほしい。
+ * だから、登りきった先にちゃんと道が続いていて、
+ * 下からはまっすぐ入ってこられて、
+ * 階段が下の階の出口を塞がない向きを選ぶ。
+ */
+export function stairAxis(link, up, v) {
+  let best = -1, bestScore = -1e9;
+  for (const d of [0, 1, 4, 5]) {
+    let sc = 0;
+    if (up & (1 << d)) sc += 6;              // 登りきった先に道がある
+    if (link & (1 << OPP[d])) sc += 4;       // 下からまっすぐ入ってこられる
+    if (link & (1 << d)) sc -= 7;            // 階段が下の階の出口を塞ぐ
+    if (up & (1 << OPP[d])) sc -= 3;         // 上の道が階段の真上に開いてしまう
+    if (d === v.dir) sc += 1;                // 同点なら素案どおり
+    if (sc > bestScore) { bestScore = sc; best = d; }
   }
+  const dir = best;
   const deg = ((link & 1) ? 1 : 0) + ((link & 2) ? 1 : 0)
             + ((link & 16) ? 1 : 0) + ((link & 32) ? 1 : 0);
   return { dir, axis: (dir === 0 || dir === 1) ? 0 : 1, sign: (dir === 0 || dir === 4) ? 1 : -1, deg };
@@ -198,6 +206,7 @@ export function stairAxis(link, v) {
  */
 function stairColumn(world, gx, gy, gz) {
   const seed = world.seed;
+  if (inLandmark(seed, gx, gy, gz)) return null;   // ランドマークの形はランドマークが決める
   const link = world.linkBits(gx, gy, gz);
   let ly = gy, lower = link;
   if ((link & 8) && world.vfeat(gx, gy - 1, gz) && world.vfeat(gx, gy - 1, gz).kind === V_STAIR) {
@@ -206,8 +215,8 @@ function stairColumn(world, gx, gy, gz) {
     return null;
   }
   const v = world.vfeat(gx, ly, gz);
-  const a = stairAxis(lower, v);
   const up = world.linkBits(gx, ly + 1, gz);
+  const a = stairAxis(lower, up, v);
   const both = lower | up;
   // 階段の脇に通路を空けるのは、上下のどちらかに本当に横道があるときだけ。
   // なければ部屋いっぱいに広げて、左右をそのまま岩の壁にする。
@@ -227,6 +236,18 @@ export function roomOf(world, gx, gy, gz) {
   const ox = gx * CELL, oz = gz * CELL;
   let y1 = yF + ceilHeight(seed, gx, gy, gz);
   const upOpen = (link & 4) && world.vfeat(gx, gy, gz).kind === V_OPEN;
+
+  const lm = lmRoom(seed, gx, gy, gz);
+  if (lm) {
+    if (upOpen) y1 = yF + LEVEL;
+    if (lm.full) {
+      return { x0: ox, x1: ox + CELL, z0: oz, z1: oz + CELL, y0: yF, y1,
+               link, w: CELL, d: CELL, big: true, lm };
+    }
+    const cx0 = ox + CELL / 2, cz0 = oz + CELL / 2;
+    return { x0: cx0 - lm.w / 2, x1: cx0 + lm.w / 2, z0: cz0 - lm.d / 2, z1: cz0 + lm.d / 2,
+             y0: yF, y1, link, w: lm.w, d: lm.d, big: false, lm };
+  }
 
   if (inBig(seed, gx, gy, gz)) {
     // 大空間の中は、セルいっぱいに彫る。隣とぴったり面で接するので、
@@ -323,6 +344,14 @@ export function shaftOf(world, A, gx, gy, gz) {
 /** 階段の据え方。横に道がなければ部屋いっぱいに広げ、左右を岩のままにする。 */
 /** 階段の据え方。横に道がなければ部屋いっぱいに広げ、左右をそのまま岩にする。 */
 export function stairPlan(A, v) {
+  if (v && v.lm) {
+    // ランドマークの階段は、通路の幅いっぱいに架かっている
+    const axis = (v.dir === 0 || v.dir === 1) ? 0 : 1;
+    const sign = (v.dir === 0 || v.dir === 4) ? 1 : -1;
+    const len = axis === 0 ? A.w : A.d, perp = axis === 0 ? A.d : A.w;
+    return { axis, sign, dir: v.dir, run: Math.max(2.2, len - LANDING),
+             width: perp, off: 0, full: true, perp };
+  }
   const c = A.col || { axis: (v.dir === 0 || v.dir === 1) ? 0 : 1,
                        sign: (v.dir === 0 || v.dir === 4) ? 1 : -1, dir: v.dir,
                        needNeg: true, needPos: true, lanes: 2 };
@@ -359,9 +388,11 @@ function genBase(seed, kx, ky, kz) {
   const depthBias = Math.min(0.14, Math.max(0, -ky) * 0.012);
 
   for (let i = 0; i < NCELL; i++) c.solid[i] = rng() < density + depthBias ? 1 : 0;
-  // 大空間の中は必ず掘れている
   for (let i = 0; i < NCELL; i++) {
-    if (inBig(seed, c.gx(i), c.gy(i), c.gz(i))) c.solid[i] = 0;
+    const gx = c.gx(i), gy = c.gy(i), gz = c.gz(i);
+    if (inLandmark(seed, gx, gy, gz)) { c.solid[i] = lmRock(seed, gx, gy, gz) ? 1 : 0; continue; }
+    if (lmForceOpen(seed, gx, gy, gz)) { c.solid[i] = 0; continue; }   // 出入口の外側
+    if (inBig(seed, gx, gy, gz)) c.solid[i] = 0;
   }
 
   // 空洞がばらけていたら、細い道を通してひとつにする。
@@ -396,9 +427,13 @@ function genBase(seed, kx, ky, kz) {
   for (let k = 0; k < reps.length; k++) {
     if (k === main) continue;
     let x = reps[k] % CW, z = ((reps[k] / CW) | 0) % CD, y = (reps[k] / (CW * CD)) | 0;
-    while (x !== bx) { x += Math.sign(bx - x); c.solid[idx(x, y, z)] = 0; }
-    while (z !== bz) { z += Math.sign(bz - z); c.solid[idx(x, y, z)] = 0; }
-    while (y !== by) { y += Math.sign(by - y); c.solid[idx(x, y, z)] = 0; }
+    const dig = () => {
+      const i = idx(x, y, z);
+      if (!inLandmark(seed, c.gx(i), c.gy(i), c.gz(i))) c.solid[i] = 0;
+    };
+    while (x !== bx) { x += Math.sign(bx - x); dig(); }
+    while (z !== bz) { z += Math.sign(bz - z); dig(); }
+    while (y !== by) { y += Math.sign(by - y); dig(); }
   }
   return c;
 }
@@ -425,6 +460,27 @@ function carveMaze(c, seed) {
   const rng = rngFor(seed, c.kx, c.ky, c.kz, 0x1B7D);
   const { solid, link } = c;
 
+  // ランドマークの骨格を先に置く。迷路の側はここに触れない。
+  const lmRoots = [];
+  for (let y = 0; y < CY; y++) for (let z = 0; z < CD; z++) for (let x = 0; x < CW; x++) {
+    const i = idx(x, y, z);
+    if (solid[i]) continue;
+    const gx = c.gx(i), gy = c.gy(i), gz = c.gz(i);
+    let touched = false;
+    for (let d = 0; d < 6; d++) {
+      const r = lmLinked(seed, gx, gy, gz, d);
+      if (r === null) continue;
+      touched = true;
+      if (!r) continue;
+      const nx = x + DX[d], ny = y + DY[d], nz = z + DZ[d];
+      if (nx < 0 || nx >= CW || ny < 0 || ny >= CY || nz < 0 || nz >= CD) continue;
+      const j = idx(nx, ny, nz);
+      if (solid[j]) continue;
+      link[i] |= 1 << d; link[j] |= 1 << OPP[d];
+    }
+    if (touched) lmRoots.push(i);
+  }
+
   // 大空間の中は、はじめから全部ひと続きにしておく。
   // ただし橋の真下だけはつながない。橋の床は岩のままでなければならない。
   for (let y = 0; y < CY; y++) for (let z = 0; z < CD; z++) for (let x = 0; x < CW; x++) {
@@ -447,6 +503,7 @@ function carveMaze(c, seed) {
   const seen = new Uint8Array(NCELL);
   const stack = [start];
   seen[start] = 1;
+  for (const i of lmRoots) if (!seen[i]) { seen[i] = 1; stack.push(i); }
   const horiz = [0, 1, 4, 5], vert = [2, 3], order = new Array(6);
   while (stack.length) {
     const i = stack[stack.length - 1];
@@ -466,6 +523,7 @@ function carveMaze(c, seed) {
       if (nx < 0 || nx >= CW || ny < 0 || ny >= CY || nz < 0 || nz >= CD) continue;
       const j = idx(nx, ny, nz);
       if (seen[j] || solid[j]) continue;
+      if (lmLinked(seed, c.gx(i), c.gy(i), c.gz(i), d) !== null) continue;
       if (d === 2 && !structuralUp(seed, c, i)) continue;
       if (d === 3 && !structuralUp(seed, c, j)) continue;
       link[i] |= 1 << d; link[j] |= 1 << OPP[d];
@@ -486,6 +544,7 @@ function carveMaze(c, seed) {
         if (nx < 0 || nx >= CW || ny < 0 || ny >= CY || nz < 0 || nz >= CD) continue;
         const j = idx(nx, ny, nz);
         if (solid[j] || !seen[j]) continue;
+        if (lmLinked(seed, c.gx(i), c.gy(i), c.gz(i), d) !== null) continue;
         if (d === 2 && !structuralUp(seed, c, i)) continue;
         if (d === 3 && !structuralUp(seed, c, j)) continue;
         link[i] |= 1 << d; link[j] |= 1 << OPP[d];
@@ -506,6 +565,7 @@ function carveMaze(c, seed) {
       if (nx >= CW || ny >= CY || nz >= CD) continue;
       const j = idx(nx, ny, nz);
       if (solid[j] || (link[i] & (1 << d))) continue;
+      if (lmLinked(seed, c.gx(i), c.gy(i), c.gz(i), d) !== null) continue;
       if (d === 2 && !canLinkUp(seed, c, i)) continue;
       // 床のない縦を、まだ何ともつながっていないセルに足さない。
       // それ一本きりになると、落ちて入るだけの袋小路ができる
@@ -568,6 +628,8 @@ function openBorders(c, seed, baseOf) {
     const push = (a, bSolid) => {
       if (c.solid[a] || bSolid) return;
       const gx = c.gx(a), gy = c.gy(a), gz = c.gz(a);
+      const lr = lmLinked(seed, gx, gy, gz, d);
+      if (lr !== null) { if (lr) c.link[a] |= 1 << d; return; }
       if (axis === 1) {
         // 縦は低い天井をまたげない。床のない縦も境界には開けない——
         // 向こう側が「落ちて入るだけ」の袋小路になりかねない
@@ -626,9 +688,26 @@ function repairWalk(c, seed) {
   const find = (a) => { while (par[a] !== a) { par[a] = par[par[a]]; a = par[a]; } return a; };
   const uni = (a, b) => { a = find(a); b = find(b); if (a === b) return false; par[a] = b; return true; };
 
+  const kindOf = (i) => stair[i] ? V_STAIR : baseVFeat(seed, c.gx(i), c.gy(i), c.gz(i)).kind;
+
+  // 階段を架けたなら、登りきった先に道を通す。
+  // 「上の階へ行きたいから架けた」ように見えてほしい。
+  for (let y = 0; y + 1 < CY; y++) for (let z = 0; z < CD; z++) for (let x = 0; x < CW; x++) {
+    const i = idx(x, y, z);
+    if (solid[i] || !(link[i] & 4) || kindOf(i) !== V_STAIR) continue;
+    if (inLandmark(seed, c.gx(i), c.gy(i), c.gz(i))) continue;
+    const j = idx(x, y + 1, z);
+    const a = stairAxis(link[i], link[j], baseVFeat(seed, c.gx(i), c.gy(i), c.gz(i)));
+    if (link[j] & (1 << a.dir)) continue;
+    const nx = x + DX[a.dir], nz = z + DZ[a.dir];
+    if (nx < 0 || nx >= CW || nz < 0 || nz >= CD) continue;
+    const k = idx(nx, y + 1, nz);
+    if (solid[k] || !link[k]) continue;
+    link[j] |= 1 << a.dir; link[k] |= 1 << OPP[a.dir];
+  }
+
   let comps = 0;
   for (let i = 0; i < NCELL; i++) if (!solid[i] && floorOf[i]) comps++;
-  const kindOf = (i) => stair[i] ? V_STAIR : baseVFeat(seed, c.gx(i), c.gy(i), c.gz(i)).kind;
   const shafts = [];
 
   for (let y = 0; y < CY; y++) for (let z = 0; z < CD; z++) for (let x = 0; x < CW; x++) {
@@ -654,6 +733,7 @@ function repairWalk(c, seed) {
     for (let z = 0; z < CD; z++) for (let x = 0; x < CW; x++) {
       const i = idx(x, y, z);
       if (solid[i] || !(link[i] & 4)) continue;
+      if (inLandmark(seed, c.gx(i), c.gy(i), c.gz(i))) { hasUp = true; continue; }
       const k = kindOf(i);
       if (k === V_STAIR) hasUp = true;
       else if (k === V_SHAFT) top.push(i);
@@ -665,6 +745,7 @@ function repairWalk(c, seed) {
 
   shuffle(rngFor(seed, c.kx, c.ky, c.kz, 0x571A), shafts);
   for (const i of shafts) {
+    if (inLandmark(seed, c.gx(i), c.gy(i), c.gz(i))) continue;
     if (comps <= 1) break;
     const x = i % CW, z = ((i / CW) | 0) % CD, y = (i / (CW * CD)) | 0;
     if (!uni(i, idx(x, y + 1, z))) continue;
@@ -682,6 +763,7 @@ function repairWalk(c, seed) {
           if (nx >= CW || nz >= CD) continue;
           const j = idx(nx, y, nz);
           if (solid[j] || !floorOf[j] || find(i) === find(j)) continue;
+          if (lmLinked(seed, c.gx(i), c.gy(i), c.gz(i), d) !== null) continue;
           link[i] |= 1 << d; link[j] |= 1 << OPP[d];
           uni(i, j); comps--;
         }
@@ -703,7 +785,8 @@ function repairWalk(c, seed) {
   for (const [r, b] of bucket) if (b.n > best) { best = b.n; mainRoot = r; }
   for (const [r, b] of bucket) {
     if (r === mainRoot || !b.up.length) continue;
-    stair[b.up[hash32(seed, c.kx, c.ky, c.kz, r) % b.up.length]] = 1;
+    const pick = b.up.filter((i) => !inLandmark(seed, c.gx(i), c.gy(i), c.gz(i)));
+    if (pick.length) stair[pick[hash32(seed, c.kx, c.ky, c.kz, r) % pick.length]] = 1;
   }
 }
 
