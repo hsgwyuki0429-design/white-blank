@@ -181,6 +181,14 @@ await visit('door', () => {
   return [(g.x + .5) * 5.6 + n[0] * 0.9, g.y * 2.7 + 0.1, (g.z + .5) * 5.6 + n[2] * 0.9, yaw, 0.0];
 });
 
+// ランドマークをひとつずつ撮る
+for (const name of ['cathedral', 'compression', 'stairs', 'stacked', 'nested', 'descent']) {
+  const info = await page.evaluate((n) => window.__wb.jump(n), name);
+  if (!info) { console.error('見つからず: ' + name); continue; }
+  await page.waitForTimeout(900);
+  await shot('lm-' + name);
+}
+
 const stats = await page.evaluate(() => {
   const r = window.__wb.renderer.info.render;
   const b = window.__wb.body;

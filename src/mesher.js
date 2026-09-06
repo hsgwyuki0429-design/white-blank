@@ -12,7 +12,7 @@
 
 import * as THREE from 'three';
 import {
-  CW, CY, CD, NCELL, CELL, LEVEL, idx, roomOf, throatOf, shaftOf,
+  CW, CY, CD, NCELL, CELL, LEVEL, idx, roomOf, throatOf, shaftOf, lmSolids,
 } from './world.js';
 import { hash32 } from './rng.js';
 
@@ -155,6 +155,7 @@ function emitShaft(b, s, tint) {
 function emitCell(b, world, gx, gy, gz, link) {
   const seed = world.seed;
   const A = roomOf(world, gx, gy, gz);
+  const ox0 = gx * CELL, oz0 = gz * CELL;
   const tint = 1 - Math.min(0.16, Math.max(0, -gy) * 0.006);
 
   const up = shaftOf(world, A, gx, gy, gz);
@@ -217,6 +218,22 @@ function emitCell(b, world, gx, gy, gz, link) {
     emitShaft(b, up, tint);
     if (up.stair) emitStair(b, A, up, tint);
   }
+
+  // ランドマークがセルの中に残した岩の塊（柱など）
+  const solids = lmSolids(seed, gx, gy, gz);
+  if (solids) for (const s of solids) emitBlock(b, ox0 + s.x0, ox0 + s.x1, oz0 + s.z0, oz0 + s.z1,
+                                               A.y0 + s.y0, A.y0 + s.y1, s.bot, s.top, tint);
+}
+
+/** セルの中に残した岩の塊。柱や、天井から垂れた塊。 */
+function emitBlock(b, x0, x1, z0, z1, y0, y1, bot, top, tint) {
+  const sh = (u, v) => tint * (0.86 + 0.14 * Math.min(1, (v - y0) / 2.2));
+  emitFace(b, 'x', x0, -1, z0, z1, y0, y1, null, sh);
+  emitFace(b, 'x', x1, 1, z0, z1, y0, y1, null, sh);
+  emitFace(b, 'z', z0, -1, x0, x1, y0, y1, null, sh);
+  emitFace(b, 'z', z1, 1, x0, x1, y0, y1, null, sh);
+  if (top) emitFace(b, 'y', y1, 1, x0, x1, z0, z1, null, () => tint * 0.97);
+  if (bot) emitFace(b, 'y', y0, -1, x0, x1, z0, z1, null, () => tint * 0.80);
 }
 
 /** 階段。行き止まりなら部屋いっぱいに広がり、左右はそのまま岩の壁になる。 */
