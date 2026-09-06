@@ -49,14 +49,16 @@ for (const seedName of ['しろ', 'あお', 'seed-3']) {
         if (w.linkBits(dx, dy, dz) & 8) continue;   // 床に穴のあるセルは登る前に落ちる
         const v = w.vfeat(dx, dy, dz);
         if (!v || v.kind !== 1) continue;
-        const D = { 0: [1, 0], 1: [-1, 0], 4: [0, 1], 5: [0, -1] }[v.dir];
-        return { x: dx, y: dy, z: dz, dir: v.dir, dx: D[0], dz: D[1] };
+        const p = window.__wb.stairOf(dx, dy, dz);
+        if (!p) continue;
+        const D = { 0: [1, 0], 1: [-1, 0], 4: [0, 1], 5: [0, -1] }[p.dir];
+        return { x: dx, y: dy, z: dz, dir: p.dir, dx: D[0], dz: D[1] };
       }
     return null;
   });
   if (stair) {
     const y1 = await page.evaluate((s) => {
-      window.__wb.put((s.x + .5) * 3.4 - s.dx * 1.5, s.y * 2.7 + 0.5, (s.z + .5) * 3.4 - s.dz * 1.5);
+      window.__wb.put((s.x + .5) * 5.6 - s.dx * 1.5, s.y * 2.7 + 0.5, (s.z + .5) * 5.6 - s.dz * 1.5);
       window.__wb.look(Math.atan2(-s.dx, -s.dz), -0.1);
       window.__wb.sim(0.6);                       // まず床に落ち着かせる
       window.__wb.sim(6, ['KeyW']);               // 6秒ぶん登る
@@ -75,10 +77,9 @@ for (const seedName of ['しろ', 'あお', 'seed-3']) {
         if (!w.open(dx, dy, dz)) continue;
         const v = w.vfeat(dx, dy, dz);
         if (!v || v.kind !== 0) continue;
-        // 穴は隅寄せの2x2。その中心の上に立たせる
-        const i0 = (v.corner === 1 || v.corner === 2) ? 2 : 0;
-        const j0 = (v.corner === 2 || v.corner === 3) ? 2 : 0;
-        return { x: dx * 3.4 + (i0 + 1) * 0.85, y: (dy + 1) * 2.7 + 0.4, z: dz * 3.4 + (j0 + 1) * 0.85, cell: dy };
+        const s = window.__wb.shaftBox(dx, dy, dz);
+        if (!s) continue;
+        return { x: (s.x0 + s.x1) / 2, y: (dy + 1) * 2.7 + 0.4, z: (s.z0 + s.z1) / 2, cell: dy };
       }
     return null;
   });
@@ -105,7 +106,7 @@ for (const seedName of ['しろ', 'あお', 'seed-3']) {
         const bits = w.linkBits(dx, 0, dz);
         for (const [d, yaw] of [[0, -Math.PI / 2], [1, Math.PI / 2], [4, Math.PI], [5, 0]]) {
           if (bits & (1 << d)) continue;
-          window.__wb.put((dx + .5) * 3.4, 0.1, (dz + .5) * 3.4);
+          window.__wb.put((dx + .5) * 5.6, 0.1, (dz + .5) * 5.6);
           window.__wb.look(yaw, 0);
           return true;
         }
@@ -128,7 +129,8 @@ for (const seedName of ['しろ', 'あお', 'seed-3']) {
   await page.evaluate(() => {
     const d = window.__wb.doorPos(), g = window.__wb.goal();
     const n = { 0: [-1, 0, 0], 1: [1, 0, 0], 4: [0, 0, -1], 5: [0, 0, 1] }[g.dir];
-    window.__wb.put(d.x + n[0] * 1.8, g.y * 2.7 + 0.1, d.z + n[2] * 1.8);
+    const A = window.__wb.room(g.x, g.y, g.z);          // 部屋の真ん中から扉へ歩く
+    window.__wb.put((A.x0 + A.x1) / 2, g.y * 2.7 + 0.1, (A.z0 + A.z1) / 2);
     window.__wb.look(Math.atan2(n[0], n[2]), 0);
   });
   await page.evaluate(() => { window.__wb.sim(0.4); window.__wb.sim(4, ['KeyW']); });
@@ -138,13 +140,20 @@ for (const seedName of ['しろ', 'あお', 'seed-3']) {
   // ── 長く歩いても世界から抜け落ちないか ──────────────
   const wander = await page.evaluate(() => {
     const w = window.__wb.world, b = window.__wb.body;
-    const YAW = { 0: -Math.PI / 2, 1: Math.PI / 2, 4: Math.PI, 5: 0 };
     const BACK = { 0: 1, 1: 0, 4: 5, 5: 4 };
     let last = -1, outside = 0, minY = 0, maxY = 0, dist = 0;
     let px = b.x, pz = b.z;
-    for (let n = 0; n < 110; n++) {
-      const cx = Math.floor(b.x / 3.4), cy = Math.floor((b.y + 0.35) / 2.7), cz = Math.floor(b.z / 3.4);
-      if (!w.open(cx, cy, cz)) outside++;               // 岩の中にいたら異常
+    // 目標の点へ向かって、少しずつ向きを直しながら歩く。
+    // 戸口は狭いので、軸の方角へ直進するだけでは壁にぶつかって進めない。
+    const goTo = (tx, tz, sec) => {
+      for (let k = 0; k < sec * 10; k++) {
+        window.__wb.look(Math.atan2(-(tx - b.x), -(tz - b.z)), 0);
+        window.__wb.sim(0.1, ['KeyW']);
+      }
+    };
+    for (let n = 0; n < 60; n++) {
+      const cx = Math.floor(b.x / 5.6), cy = Math.floor((b.y + 0.35) / 2.7), cz = Math.floor(b.z / 5.6);
+      if (!w.open(cx, cy, cz)) outside++;
       minY = Math.min(minY, b.y); maxY = Math.max(maxY, b.y);
       const bits = w.linkBits(cx, cy, cz);
       const opts = [0, 1, 4, 5].filter((d) => bits & (1 << d));
@@ -152,15 +161,19 @@ for (const seedName of ['しろ', 'あお', 'seed-3']) {
         const fwd = opts.filter((d) => d !== BACK[last]);
         const d = (fwd.length ? fwd : opts)[Math.floor(Math.random() * (fwd.length || opts.length))];
         last = d;
-        window.__wb.look(YAW[d], 0);
+        const g = window.__wb.gate(cx, cy, cz, d);
+        goTo(g[0], g[1], 1.1);                       // まず戸口へ
+        const D = { 0: [1, 0], 1: [-1, 0], 4: [0, 1], 5: [0, -1] }[d];
+        goTo(g[0] + D[0] * 2.4, g[1] + D[1] * 2.4, 1.0);   // くぐって奥へ
+      } else {
+        window.__wb.sim(1.0, ['KeyW']);
       }
-      window.__wb.sim(1.4, ['KeyW']);
       dist += Math.hypot(b.x - px, b.z - pz); px = b.x; pz = b.z;
     }
     return { outside, minY, maxY, dist, chunks: window.__wb.chunks, y: b.y, g: b.grounded };
   });
   ok(`${seedName} 長く歩いても壁の中に落ちない`,
-     wander.outside === 0 && wander.minY > -400 && wander.chunks <= 30,
+     wander.outside === 0 && wander.minY > -400 && wander.chunks <= 50 && wander.dist > 60,
      `${wander.dist.toFixed(0)}m 歩行 / 岩の中=${wander.outside}回 / 深さ ${wander.minY.toFixed(1)}〜${wander.maxY.toFixed(1)}m / チャンク数=${wander.chunks}`);
 
   // ── 同じ種なら同じ世界か ────────────────────────────

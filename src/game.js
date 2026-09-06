@@ -4,14 +4,16 @@
 // 世界は無限で、どこまで行っても続いている。引き返せば、来た道がそのままある。
 
 import * as THREE from 'three';
-import { World, CW, CY, CD, CELL, LEVEL, fdiv, V_STAIR } from './world.js';
+import { World, CW, CY, CD, CELL, LEVEL, fdiv, isLowCeil, inBig as isBigAt,
+         isBridge, roomOf, shaftOf, stairPlan, V_STAIR } from './world.js';
 import { buildChunk } from './mesher.js';
 import { Colliders, step as physStep, EYE } from './physics.js';
 import { Sound } from './audio.js';
 import { hash32, hashUnit, seedFromString, seedName } from './rng.js';
 
-const RENDER_R = 1;              // 読み込むチャンクの半径
-const FOG_NEAR = 3.0, FOG_FAR = 21.0;
+const RENDER_R = 1;              // 読み込むチャンクの半径（水平）
+const RENDER_RY = 2;             // 縦は広く。吹き抜けは見上げるためにある
+const FOG_NEAR = 3.0, FOG_FAR = 30.0;
 const WALK = 2.55, RUN = 4.15, ACCEL = 14, AIR_ACCEL = 2.2;
 const JUMP = 5.0;
 const REACH = 2.6;               // 印を刻める距離
@@ -60,17 +62,17 @@ function panelTexture() {
   cv.width = cv.height = S;
   const g = cv.getContext('2d');
   g.fillStyle = '#ffffff'; g.fillRect(0, 0, S, S);
-  g.strokeStyle = 'rgba(0,0,0,0.055)'; g.lineWidth = 10; g.strokeRect(5, 5, S - 10, S - 10);
-  g.strokeStyle = 'rgba(0,0,0,0.10)'; g.lineWidth = 3.5; g.strokeRect(1.75, 1.75, S - 3.5, S - 3.5);
+  // 縁取りはしない。境目は陰影と厚みだけで読ませる。
+  // 残すのは、白が「面」ではなく「物」に見えるだけの、ごくわずかな地肌。
   const im = g.getImageData(0, 0, S, S), d = im.data;
   for (let i = 0; i < S * S; i++) {
-    const n = (Math.random() - 0.5) * 11;
+    const n = (Math.random() - 0.5) * 9;
     d[i * 4] += n; d[i * 4 + 1] += n; d[i * 4 + 2] += n;
   }
   g.putImageData(im, 0, 0);
   const t = new THREE.CanvasTexture(cv);
   t.colorSpace = THREE.SRGBColorSpace;
-  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
   return t;
 }
 
@@ -91,9 +93,9 @@ scene.add(head);
 
 // 光源はどこにもない。それでも形が読めるように、方向のある淡い光を足してある。
 // 物理的には嘘だが、この嘘がないと白い箱はただの白い面になってしまう。
-scene.add(new THREE.AmbientLight(0xffffff, 0.30));
-scene.add(new THREE.HemisphereLight(0xffffff, 0xb4bac2, 0.55));   // 床は明るく、天井は沈む
-const key = new THREE.DirectionalLight(0xffffff, 0.26);
+scene.add(new THREE.AmbientLight(0xffffff, 0.33));
+scene.add(new THREE.HemisphereLight(0xffffff, 0xb6bcc4, 0.58));   // 床は明るく、天井は沈む
+const key = new THREE.DirectionalLight(0xffffff, 0.22);
 key.position.set(0.62, 0.55, 0.56);
 scene.add(key);
 const fill = new THREE.DirectionalLight(0xeaf0f6, 0.12);
@@ -148,7 +150,7 @@ function wantChunks(px, py, pz) {
   const ky = fdiv(Math.floor(py / LEVEL), CY);
   const kz = fdiv(Math.floor(pz / CELL), CD);
   const want = new Set();
-  for (let dy = -RENDER_R; dy <= RENDER_R; dy++)
+  for (let dy = -RENDER_RY; dy <= RENDER_RY; dy++)
     for (let dz = -RENDER_R; dz <= RENDER_R; dz++)
       for (let dx = -RENDER_R; dx <= RENDER_R; dx++) {
         const k = (kx + dx) + ',' + (ky + dy) + ',' + (kz + dz);
@@ -201,7 +203,7 @@ function flushQueue(budget) {
 function ensureAround(x, y, z) {
   const kx = fdiv(Math.floor(x / CELL), CW), kz = fdiv(Math.floor(z / CELL), CD);
   // 読み込む半径からはみ出す所は作らない。作った端から捨てることになる
-  for (const dy of [0, -1, 1]) {
+  for (const dy of [0, -1, 1, -2]) {
     const ky = fdiv(Math.floor(y / LEVEL) + dy * CY, CY);
     for (const dx of [0, -1, 1]) for (const dz of [0, -1, 1]) {
       if (dy !== 0 && (dx || dz)) continue;
@@ -236,7 +238,14 @@ function findGoal(w) {
         if (!w.open(x, y, z)) continue;
         const lb = w.linkBits(x, y, z);
         if ((lb & 4) && w.vfeat(x, y, z).kind === V_STAIR) continue;
-        for (const d of [0, 1, 4, 5]) if (!(lb & (1 << d))) return { x, y, z, dir: d };
+        if (isLowCeil(s, x, y, z) || !w.hasFloor(x, y, z) || isBigAt(s, x, y, z)) continue;
+        const A = roomOf(w, x, y, z);
+        if (A.col) continue;                       // 階段の立つ柱は、床が踊り場しかない
+        for (const d of [0, 1, 4, 5]) {
+          if (lb & (1 << d)) continue;
+          const wide = (d === 0 || d === 1) ? A.z1 - A.z0 : A.x1 - A.x0;
+          if (wide >= 2.3) return { x, y, z, dir: d };
+        }
       }
     }
   }
@@ -247,18 +256,19 @@ const FACE_N = { 0: [-1, 0, 0], 1: [1, 0, 0], 4: [0, 0, -1], 5: [0, 0, 1] };
 
 function buildDoor(g) {
   const n = FACE_N[g.dir];
-  const cx = (g.x + 0.5) * CELL, cz = (g.z + 0.5) * CELL;
-  const px = g.dir === 0 ? (g.x + 1) * CELL : g.dir === 1 ? g.x * CELL : cx;
-  const pz = g.dir === 4 ? (g.z + 1) * CELL : g.dir === 5 ? g.z * CELL : cz;
-  const py = g.y * LEVEL + 1.20;
+  const A = roomOf(world, g.x, g.y, g.z);
+  const cx = (A.x0 + A.x1) / 2, cz = (A.z0 + A.z1) / 2;
+  const px = g.dir === 0 ? A.x1 : g.dir === 1 ? A.x0 : cx;
+  const pz = g.dir === 4 ? A.z1 : g.dir === 5 ? A.z0 : cz;
+  const py = g.y * LEVEL + 1.14;
   doorPos.set(px + n[0] * 0.4, py, pz + n[2] * 0.4);
 
   const grp = new THREE.Group();
   const frame = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.74, 2.46),
+    new THREE.PlaneGeometry(1.62, 2.18),
     new THREE.MeshBasicMaterial({ color: 0xbdbdb9 }));
   const hole = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.44, 2.24),
+    new THREE.PlaneGeometry(1.34, 1.94),
     new THREE.MeshBasicMaterial({ color: 0x08080a, fog: false }));
   frame.position.set(px + n[0] * 0.014, py, pz + n[2] * 0.014);
   hole.position.set(px + n[0] * 0.026, py, pz + n[2] * 0.026);
@@ -354,6 +364,7 @@ function findSpawn(w) {
         if (!w.open(dx, sy, dz)) continue;
         const lb = w.linkBits(dx, sy, dz);
         if (lb & 8) continue;                                       // 床が抜けている所は避ける
+        if (isLowCeil(w.seed, dx, sy, dz) || isBigAt(w.seed, dx, sy, dz)) continue;
         if ((lb & 4) && w.vfeat(dx, sy, dz).kind === V_STAIR) continue;
         return { x: dx, y: sy, z: dz };
       }
@@ -612,6 +623,22 @@ window.__wb = {
   look(y, p) { yaw = y; if (p !== undefined) pitch = p; },
   put(x, y, z) { body.x = x; body.y = y; body.z = z; body.vx = body.vy = body.vz = 0; },
   goal: () => goal,
+  isVoid: (x, y, z) => isBigAt(world.seed, x, y, z),
+  isBridge: (x, y, z) => isBridge(world.seed, x, y, z),
+  isLow: (x, y, z) => isLowCeil(world.seed, x, y, z),
+  room: (x, y, z) => roomOf(world, x, y, z),
+  shaftBox: (x, y, z) => shaftOf(world, roomOf(world, x, y, z), x, y, z),
+  stairOf(x, y, z) {
+    const A = roomOf(world, x, y, z), v = world.vfeat(x, y, z);
+    return v && v.kind === V_STAIR ? stairPlan(A, v) : null;
+  },
+  /** そのリンクを通り抜けるとき、狙うべき点（喉の真ん中）。 */
+  gate(x, y, z, d) {
+    const cx = (x + 0.5) * CELL, cz = (z + 0.5) * CELL;
+    const dx = d === 0 ? 1 : d === 1 ? -1 : 0, dz = d === 4 ? 1 : d === 5 ? -1 : 0;
+    return [cx + dx * CELL * 0.5, cz + dz * CELL * 0.5];
+  },
+  setCenter(x, y, z) { wantChunks((x + .5) * CELL, y * LEVEL, (z + .5) * CELL); flushQueue(999); },
   // 描画を待たずに世界の時間だけ進める。試験のときだけ使う。
   sim(sec, held) {
     const prev = [...keys];

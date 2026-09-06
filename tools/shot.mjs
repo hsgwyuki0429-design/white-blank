@@ -56,13 +56,13 @@ for (let i = 0; i < 4; i++) {
 }
 
 // 迷路を実際に辿って歩く。開いている方向へ、行き止まりなら曲がる
-const CELL = 3.4, LEVEL = 2.7;
+const CELL = 5.6, LEVEL = 2.7;
 const DIRYAW = { 0: -Math.PI / 2, 1: Math.PI / 2, 4: Math.PI, 5: 0 };
 let lastDir = -1;
 for (let leg = 0; leg < 10; leg++) {
   const dir = await page.evaluate(([last]) => {
     const b = window.__wb.body, w = window.__wb.world;
-    const cx = Math.floor(b.x / 3.4), cy = Math.floor((b.y + 0.35) / 2.7), cz = Math.floor(b.z / 3.4);
+    const cx = Math.floor(b.x / 5.6), cy = Math.floor((b.y + 0.35) / 2.7), cz = Math.floor(b.z / 5.6);
     const bits = w.linkBits(cx, cy, cz);
     const opts = [0, 1, 4, 5].filter((d) => bits & (1 << d));
     if (!opts.length) return -1;
@@ -92,7 +92,7 @@ async function visit(name, finder) {
 async function findVertical(name, want) {
   await visit(name, new Function('want', `
     const w = window.__wb.world, b = window.__wb.body;
-    const c0 = [Math.floor(b.x / 3.4), Math.floor((b.y + .35) / 2.7), Math.floor(b.z / 3.4)];
+    const c0 = [Math.floor(b.x / 5.6), Math.floor((b.y + .35) / 2.7), Math.floor(b.z / 5.6)];
     for (let r = 0; r < 16; r++)
       for (let dy = -2; dy <= 2; dy++) for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
         if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
@@ -101,16 +101,66 @@ async function findVertical(name, want) {
         const v = w.vfeat(x, y, z);
         if (v.kind !== 1 || !!v.smooth !== ${want}) continue;
         const yaw = { 0: -Math.PI / 2, 1: Math.PI / 2, 4: Math.PI, 5: 0 }[v.dir];
-        return [(x + .5) * 3.4 + Math.sin(yaw) * 2.3, y * 2.7 + .1, (z + .5) * 3.4 + Math.cos(yaw) * 2.3, yaw, 0.16];
+        return [(x + .5) * 5.6 + Math.sin(yaw) * 2.3, y * 2.7 + .1, (z + .5) * 5.6 + Math.cos(yaw) * 2.3, yaw, 0.16];
       }
     return null;`));
 }
 await findVertical('stair', false);
 await findVertical('slope', true);
 
+await visit('void', () => {
+  const w = window.__wb.world, b = window.__wb.body;
+  const c0 = [Math.floor(b.x / 5.6), Math.floor(b.z / 5.6)];
+  for (let r = 0; r < 40; r++)
+    for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+      if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+      const x = c0[0] + dx, z = c0[1] + dz;
+      for (let y = 3; y > -22; y--) {
+        if (!window.__wb.isVoid(x, y, z)) continue;
+        if (window.__wb.isVoid(x, y - 1, z)) continue;      // 底を探す
+        window.__wb.setCenter(x, y, z);
+        return [(x + .5) * 5.6, y * 2.7 + 0.1, (z + .5) * 5.6, 0.9, 0.62];
+      }
+    }
+  return null;
+});
+
+await visit('low', () => {
+  const w = window.__wb.world, b = window.__wb.body;
+  const c0 = [Math.floor(b.x / 5.6), Math.floor((b.y + .35) / 2.7), Math.floor(b.z / 5.6)];
+  for (let r = 0; r < 16; r++)
+    for (let dy = -2; dy <= 2; dy++) for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+      if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+      const x = c0[0] + dx, y = c0[1] + dy, z = c0[2] + dz;
+      if (!w.open(x, y, z) || !window.__wb.isLow(x, y, z) || !w.hasFloor(x, y, z)) continue;
+      const bits = w.linkBits(x, y, z);
+      for (const [d, yaw] of [[0, -Math.PI / 2], [1, Math.PI / 2], [4, Math.PI], [5, 0]]) {
+        if (!(bits & (1 << d))) continue;
+        return [(x + .5) * 5.6 - Math.sin(yaw) * 1.6, y * 2.7 + .1, (z + .5) * 5.6 - Math.cos(yaw) * 1.6, yaw, 0.05];
+      }
+    }
+  return null;
+});
+
+await visit('bridge', () => {
+  const w = window.__wb.world, b = window.__wb.body;
+  const c0 = [Math.floor(b.x / 5.6), Math.floor(b.z / 5.6)];
+  for (let r = 0; r < 60; r++)
+    for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+      if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+      const x = c0[0] + dx, z = c0[1] + dz;
+      for (let y = 2; y > -32; y--) {
+        if (!window.__wb.isBridge(x, y, z)) continue;
+        window.__wb.setCenter(x, y, z);
+        return [(x + .5) * 5.6, y * 2.7 + 0.1, (z + .5) * 5.6, -Math.PI / 2, 0.02];
+      }
+    }
+  return null;
+});
+
 await visit('shaft', () => {
   const w = window.__wb.world, b = window.__wb.body;
-  const c0 = [Math.floor(b.x / 3.4), Math.floor((b.y + .35) / 2.7), Math.floor(b.z / 3.4)];
+  const c0 = [Math.floor(b.x / 5.6), Math.floor((b.y + .35) / 2.7), Math.floor(b.z / 5.6)];
   for (let r = 0; r < 14; r++)
     for (let dy = -2; dy <= 2; dy++) for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
       if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
@@ -119,7 +169,7 @@ await visit('shaft', () => {
       const v = w.vfeat(x, y, z);
       if (!v || v.kind !== 0) continue;
       // 穴は「そのセルの天井」にあるので、ひとつ上の階から覗きこむ
-      return [(x + .5) * 3.4, (y + 1) * 2.7 + .1, (z + .5) * 3.4, 0.7, -0.72];
+      return [(x + .5) * 5.6, (y + 1) * 2.7 + .1, (z + .5) * 5.6, 0.7, -0.72];
     }
   return null;
 });
@@ -128,7 +178,7 @@ await visit('door', () => {
   const d = window.__wb.doorPos(), g = window.__wb.goal();
   const n = { 0: [-1, 0, 0], 1: [1, 0, 0], 4: [0, 0, -1], 5: [0, 0, 1] }[g.dir];
   const yaw = Math.atan2(n[0], n[2]);   // 扉のほうを向く
-  return [(g.x + .5) * 3.4 + n[0] * 0.9, g.y * 2.7 + 0.1, (g.z + .5) * 3.4 + n[2] * 0.9, yaw, 0.0];
+  return [(g.x + .5) * 5.6 + n[0] * 0.9, g.y * 2.7 + 0.1, (g.z + .5) * 5.6 + n[2] * 0.9, yaw, 0.0];
 });
 
 const stats = await page.evaluate(() => {
