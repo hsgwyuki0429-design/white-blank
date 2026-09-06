@@ -4,8 +4,8 @@
 // 世界は無限で、どこまで行っても続いている。引き返せば、来た道がそのままある。
 
 import * as THREE from 'three';
-import { World, CW, CY, CD, CELL, LEVEL, fdiv, isLowCeil, inVoid as isVoidAt,
-         aperture as apertureAt, DX, DZ, V_STAIR } from './world.js';
+import { World, CW, CY, CD, CELL, LEVEL, fdiv, isLowCeil, inBig as isBigAt,
+         isBridge, roomOf, shaftOf, stairPlan, V_STAIR } from './world.js';
 import { buildChunk } from './mesher.js';
 import { Colliders, step as physStep, EYE } from './physics.js';
 import { Sound } from './audio.js';
@@ -13,7 +13,7 @@ import { hash32, hashUnit, seedFromString, seedName } from './rng.js';
 
 const RENDER_R = 1;              // 読み込むチャンクの半径（水平）
 const RENDER_RY = 2;             // 縦は広く。吹き抜けは見上げるためにある
-const FOG_NEAR = 3.0, FOG_FAR = 26.0;
+const FOG_NEAR = 3.0, FOG_FAR = 30.0;
 const WALK = 2.55, RUN = 4.15, ACCEL = 14, AIR_ACCEL = 2.2;
 const JUMP = 5.0;
 const REACH = 2.6;               // 印を刻める距離
@@ -238,8 +238,14 @@ function findGoal(w) {
         if (!w.open(x, y, z)) continue;
         const lb = w.linkBits(x, y, z);
         if ((lb & 4) && w.vfeat(x, y, z).kind === V_STAIR) continue;
-        if (isLowCeil(s, x, y, z) || !w.hasFloor(x, y, z)) continue;
-        for (const d of [0, 1, 4, 5]) if (!(lb & (1 << d))) return { x, y, z, dir: d };
+        if (isLowCeil(s, x, y, z) || !w.hasFloor(x, y, z) || isBigAt(s, x, y, z)) continue;
+        const A = roomOf(w, x, y, z);
+        if (A.col) continue;                       // 階段の立つ柱は、床が踊り場しかない
+        for (const d of [0, 1, 4, 5]) {
+          if (lb & (1 << d)) continue;
+          const wide = (d === 0 || d === 1) ? A.z1 - A.z0 : A.x1 - A.x0;
+          if (wide >= 2.3) return { x, y, z, dir: d };
+        }
       }
     }
   }
@@ -250,10 +256,11 @@ const FACE_N = { 0: [-1, 0, 0], 1: [1, 0, 0], 4: [0, 0, -1], 5: [0, 0, 1] };
 
 function buildDoor(g) {
   const n = FACE_N[g.dir];
-  const cx = (g.x + 0.5) * CELL, cz = (g.z + 0.5) * CELL;
-  const px = g.dir === 0 ? (g.x + 1) * CELL : g.dir === 1 ? g.x * CELL : cx;
-  const pz = g.dir === 4 ? (g.z + 1) * CELL : g.dir === 5 ? g.z * CELL : cz;
-  const py = g.y * LEVEL + 1.06;
+  const A = roomOf(world, g.x, g.y, g.z);
+  const cx = (A.x0 + A.x1) / 2, cz = (A.z0 + A.z1) / 2;
+  const px = g.dir === 0 ? A.x1 : g.dir === 1 ? A.x0 : cx;
+  const pz = g.dir === 4 ? A.z1 : g.dir === 5 ? A.z0 : cz;
+  const py = g.y * LEVEL + 1.14;
   doorPos.set(px + n[0] * 0.4, py, pz + n[2] * 0.4);
 
   const grp = new THREE.Group();
@@ -357,7 +364,7 @@ function findSpawn(w) {
         if (!w.open(dx, sy, dz)) continue;
         const lb = w.linkBits(dx, sy, dz);
         if (lb & 8) continue;                                       // 床が抜けている所は避ける
-        if (isLowCeil(w.seed, dx, sy, dz)) continue;
+        if (isLowCeil(w.seed, dx, sy, dz) || isBigAt(w.seed, dx, sy, dz)) continue;
         if ((lb & 4) && w.vfeat(dx, sy, dz).kind === V_STAIR) continue;
         return { x: dx, y: sy, z: dz };
       }
@@ -616,14 +623,20 @@ window.__wb = {
   look(y, p) { yaw = y; if (p !== undefined) pitch = p; },
   put(x, y, z) { body.x = x; body.y = y; body.z = z; body.vx = body.vy = body.vz = 0; },
   goal: () => goal,
-  isVoid: (x, y, z) => isVoidAt(world.seed, x, y, z),
+  isVoid: (x, y, z) => isBigAt(world.seed, x, y, z),
+  isBridge: (x, y, z) => isBridge(world.seed, x, y, z),
   isLow: (x, y, z) => isLowCeil(world.seed, x, y, z),
-  /** そのリンクを通り抜けるとき、狙うべき点（戸口の真ん中）。 */
+  room: (x, y, z) => roomOf(world, x, y, z),
+  shaftBox: (x, y, z) => shaftOf(world, roomOf(world, x, y, z), x, y, z),
+  stairOf(x, y, z) {
+    const A = roomOf(world, x, y, z), v = world.vfeat(x, y, z);
+    return v && v.kind === V_STAIR ? stairPlan(A, v) : null;
+  },
+  /** そのリンクを通り抜けるとき、狙うべき点（喉の真ん中）。 */
   gate(x, y, z, d) {
-    const ap = apertureAt(world.seed, x, y, z, d);
     const cx = (x + 0.5) * CELL, cz = (z + 0.5) * CELL;
-    const off = ap ? ap.off : 0;
-    return [cx + DX[d] * CELL * 0.5 + (DX[d] ? 0 : off), cz + DZ[d] * CELL * 0.5 + (DZ[d] ? 0 : off)];
+    const dx = d === 0 ? 1 : d === 1 ? -1 : 0, dz = d === 4 ? 1 : d === 5 ? -1 : 0;
+    return [cx + dx * CELL * 0.5, cz + dz * CELL * 0.5];
   },
   setCenter(x, y, z) { wantChunks((x + .5) * CELL, y * LEVEL, (z + .5) * CELL); flushQueue(999); },
   // 描画を待たずに世界の時間だけ進める。試験のときだけ使う。

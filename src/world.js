@@ -14,15 +14,25 @@
 
 import { hash32, rngFor, shuffle } from './rng.js';
 
-export const CW = 6, CY = 5, CD = 6;        // 1チャンクのセル数 (x, y, z)
+export const CW = 6, CY = 4, CD = 6;        // 1チャンクのセル数 (x, y, z)
 export const NCELL = CW * CY * CD;
-export const CELL = 4.0;                     // セルの水平寸法 (m)
-export const LEVEL = 2.6;                    // 1階層の高さ (m)
-export const SLAB = 0.24;                    // 床と天井の厚み (m)
+export const CELL = 5.6;                     // セルの水平寸法 (m)
+export const LEVEL = 2.7;                    // 1階層の高さ (m)
+export const SLAB = 0.28;                    // 床と天井の厚み (m)
 export const CEIL_STD = LEVEL - SLAB;        // ふつうの天井までの高さ
-export const CEIL_LOW = 1.92;                // 突然かがむことになる天井（背丈1.74がやっと通る）
-export const TILES = 4;                      // 床面をこの数で分割して穴を表現する
-export const TILE = CELL / TILES;
+export const CEIL_LOW = 1.94;                // 突然かがむことになる天井（背丈1.74がやっと通る）
+
+// 空洞は「箱の合併」でできている。
+//   部屋の箱   … セルの中に、まわりの岩を残して彫った直方体
+//   喉の箱     … 隣の部屋とのあいだの岩を貫く通り道
+//   縦穴の箱   … 床と天井の板を貫く穴
+// 部屋はセルの境界から必ず WALL だけ内側に引っこむ。
+// だから隣り合う部屋のあいだには必ず岩の厚みがあり、
+// 壁が薄板になって端が宙で切れる、ということが起こらない。
+export const WALL = 0.50;                    // 部屋のふちに残す岩の厚み (m)
+export const ROOM_MAX = CELL - WALL * 2;     // いちばん広い部屋 (4.6m)
+export const ROOM_MIN = 1.95;                // いちばん狭い通路
+export const RISE_T = 0.80;                  // 階段が部屋のどこまでで登りきるか
 
 // 方向 0:+X 1:-X 2:+Y 3:-Y 4:+Z 5:-Z
 export const DX = [1, -1, 0, 0, 0, 0];
@@ -68,83 +78,261 @@ export function inVoid(seed, gx, gy, gz) {
 
 /** そのセルの天井までの高さ。低い天井のセルは上とつながれない（後で効いてくる）。 */
 export function ceilHeight(seed, gx, gy, gz) {
-  if (inVoid(seed, gx, gy, gz)) return CEIL_STD;
+  if (inBig(seed, gx, gy, gz)) return CEIL_STD;
   return (hash32(seed, gx, gy, gz, 0x10C0) % 100) < 13 ? CEIL_LOW : CEIL_STD;
 }
 export const isLowCeil = (seed, gx, gy, gz) => ceilHeight(seed, gx, gy, gz) < CEIL_STD;
 
+// ─── 裂け目と、そこに架かる橋 ────────────────────────────────────
+// X方向にどこまでも長く、Z方向は狭く、Y方向にひたすら深い溝。
+// ところどころに橋が架かっていて、渡りながら見わたすと、
+// 手の届かない高さと距離に、同じような橋がいくつも見える。
+
+const CGX = 64, CGZ = 20;
+
+export function chasmBox(seed, gx, gz) {
+  const cx = fdiv(gx, CGX), cz = fdiv(gz, CGZ);
+  const h = hash32(seed, cx, cz, 0x0C1A);
+  if (h % 100 >= 30) return null;
+  const len = 26 + ((h >>> 7) % 18);            // 26〜43セル（145〜240m）
+  const wid = 2 + ((h >>> 12) % 2);
+  const x0 = cx * CGX + 6 + ((h >>> 15) % (CGX - 12 - len));
+  const z0 = cz * CGZ + 6 + ((h >>> 20) % (CGZ - 12 - wid));
+  const y1 = 1 - ((h >>> 24) % 4);
+  const y0 = y1 - (16 + ((h >>> 27) % 14));     // 16〜29階（43〜78m）
+  return { x0, x1: x0 + len - 1, z0, z1: z0 + wid - 1, y0, y1 };
+}
+
+export function inChasm(seed, gx, gy, gz) {
+  const b = chasmBox(seed, gx, gz);
+  return !!b && gx >= b.x0 && gx <= b.x1 && gz >= b.z0 && gz <= b.z1 && gy >= b.y0 && gy <= b.y1;
+}
+
+/** 裂け目を横断する橋。だいたい7セルに1本、高さはばらばら。 */
+export function isBridge(seed, gx, gy, gz) {
+  const b = chasmBox(seed, gx, gz);
+  if (!b || gx <= b.x0 || gx >= b.x1 || gz < b.z0 || gz > b.z1) return false;
+  if (gy <= b.y0 || gy >= b.y1) return false;
+  const h = hash32(seed, b.x0, b.z0, gx, 0xB41D);
+  if (h % 7 !== 0) return false;
+  return gy === b.y0 + 1 + ((h >>> 8) % (b.y1 - b.y0 - 1));
+}
+
+export const inBig = (seed, gx, gy, gz) =>
+  inVoid(seed, gx, gy, gz) || inChasm(seed, gx, gy, gz);
+
+/** 橋の欄干。越えられないが、見わたせる。裂け目に沿う向きの口だけ持ち上げる。 */
+export const PARAPET = 1.28;
+export function linkSill(seed, gx, gy, gz, d) {
+  if (d > 1) return 0;                                    // 裂け目に沿う向きだけ
+  if (isBridge(seed, gx, gy, gz) || isBridge(seed, gx + DX[d], gy, gz)) return PARAPET;
+  return 0;
+}
+export const walkable = (seed, gx, gy, gz, d) => linkSill(seed, gx, gy, gz, d) < 0.5;
+
 /**
- * 縦のつなぎ方の素案。吹き抜けの中は必ず「床なし」。
+ * 縦のつなぎ方の素案。大空間の中は必ず「床なし」。
  * 後でチャンクが、往復できないぶんだけ落下穴を階段に書き換える。
  * 床なしだけは書き換えない——上下のチャンクが独立に同じ答えを出す必要があるから。
  */
 export function baseVFeat(seed, gx, gy, gz) {
-  if (inVoid(seed, gx, gy, gz) && inVoid(seed, gx, gy + 1, gz)) {
-    return { kind: V_OPEN };
-  }
+  if (inVoid(seed, gx, gy, gz) && inVoid(seed, gx, gy + 1, gz)) return { kind: V_OPEN };
+  if (inChasm(seed, gx, gy, gz) && inChasm(seed, gx, gy + 1, gz)) return { kind: V_OPEN };
   const h = hash32(seed, gx, gy, gz, 0x57A1);
   const r = h % 100;
-  if (r < 16) return { kind: V_OPEN };
+  if (r < 14) return { kind: V_OPEN };
   if (r < 60) return { kind: V_STAIR, dir: HDIRS[(h >>> 7) & 3], smooth: ((h >>> 21) % 100) < 42 };
   return { kind: V_SHAFT, corner: (h >>> 9) & 3 };
 }
 
-/** 上とつながっているセルに床があるか。吹き抜けの途中には床がない。 */
+/** 上とつながっているセルに床があるか。大空間の途中には床がない。 */
 export function hasFloorBelow(seed, gx, gy, gz) {
   return baseVFeat(seed, gx, gy - 1, gz).kind !== V_OPEN;
 }
 
-// 戸口。壁いっぱいに開いているか、人ひとり分に絞られているか
-export function aperture(seed, gx, gy, gz, d) {
-  const lx = gx + (DX[d] < 0 ? -1 : 0), lz = gz + (DZ[d] < 0 ? -1 : 0);
-  const h = hash32(seed, lx, gy, lz, 0xA9E0 + (d >> 1));
-  if (h % 100 < 60) return null;                       // 壁いっぱい
-  const w = 1.15 + ((h >>> 7) % 100) / 100 * 1.15;     // 1.15〜2.30m
-  const y = 1.90 + ((h >>> 14) % 100) / 100 * 0.40;    // 高さ
-  const off = (((h >>> 21) % 100) / 100 - 0.5) * (CELL - w - 1.3);
-  return { w, h: y, off };
+/**
+ * 部屋の広がり。セルの境界から WALL 以上は必ず岩を残す。
+ * 大きさは3セル角のかたまりごとに決めるので、通路は何セルか同じ幅で続き、
+ * かたまりの境で変わる。変わるところが、そのまま戸口になる。
+ */
+export function roomSize(seed, gx, gy, gz, link) {
+  if (inBig(seed, gx, gy, gz)) return { w: ROOM_MAX, d: ROOM_MAX };
+  const hasX = (link & 3) !== 0, hasZ = (link & 48) !== 0;
+  const h = hash32(seed, fdiv(gx, 3), gy, fdiv(gz, 3), 0x2100 + (hasX ? 1 : 0) + (hasZ ? 2 : 0));
+  const r1 = (h % 128) / 128, r2 = ((h >>> 9) % 128) / 128;
+  if (hasX && !hasZ) return { w: ROOM_MAX, d: ROOM_MIN + r1 * 1.05 };
+  if (hasZ && !hasX) return { w: ROOM_MIN + r1 * 1.05, d: ROOM_MAX };
+  if (hasX && hasZ) {
+    const big = ((h >>> 18) % 100) < 38;
+    return big ? { w: ROOM_MAX, d: ROOM_MAX }
+               : { w: 2.7 + r1 * 1.5, d: 2.7 + r2 * 1.5 };
+  }
+  return { w: ROOM_MIN + r1 * 1.3, d: ROOM_MIN + r2 * 1.3 };
 }
 
-/** 角を45度に落とす。両隣が壁のときだけ。0:(-X,-Z) 1:(+X,-Z) 2:(+X,+Z) 3:(-X,+Z) */
-const CORNER_DIRS = [[1, 5], [0, 5], [0, 4], [1, 4]];
-export function chamferAt(seed, gx, gy, gz, link) {
-  let m = 0;
-  for (let c = 0; c < 4; c++) {
-    const [d1, d2] = CORNER_DIRS[c];
-    if ((link & (1 << d1)) || (link & (1 << d2))) continue;
-    const h = hash32(seed, gx, gy, gz, 0xC0A0 + c) % 100;
-    if (h < 12) m |= 2 << (c * 2);          // 大きく落とす（2タイル）
-    else if (h < 30) m |= 1 << (c * 2);     // 小さく落とす（1タイル）
+// ─── 箱 ──────────────────────────────────────────────────────────
+// すべて世界座標の直方体。y0/y1 は床の上面と天井の下面。
+
+/** セルの中に彫られた部屋。 */
+export const PARAPET_T = 0.46;     // 橋の欄干の厚み
+export const LANDING = 0.95;       // 上りきった先に残す踊り場の奥行き
+
+/** 階段の向き。部屋の形より先に決まっていないと堂々めぐりになる。 */
+export function stairAxis(link, v) {
+  const hx = (link & 3) !== 0, hz = (link & 48) !== 0;
+  let dir = v.dir;
+  if (hx !== hz) {
+    const back = hx ? ((link & 1) ? 0 : 1) : ((link & 16) ? 4 : 5);
+    dir = OPP[back];
+    if (link & (1 << dir)) dir = back;
   }
-  return m;
+  const deg = ((link & 1) ? 1 : 0) + ((link & 2) ? 1 : 0)
+            + ((link & 16) ? 1 : 0) + ((link & 32) ? 1 : 0);
+  return { dir, axis: (dir === 0 || dir === 1) ? 0 : 1, sign: (dir === 0 || dir === 4) ? 1 : -1, deg };
 }
-export const chamferSize = (m, c) => (m >> (c * 2)) & 3;
 
 /**
- * つなぎ目が床面(4x4タイル)のどこを抜くか。ビット i + j*4 が立っていたらそのタイルは無い。
- * 抜いた残りが必ず四辺すべてに接して連結する形しか選ばない。
- * そうしないと、穴の向こう側の通路へ渡れなくなる。
+ * 階段が立つ柱の、部屋の形。
+ * 上下でずれていると階段が岩に刺さるので、下の部屋に合わせて両方そろえる。
+ * 上の階に横道が残っているなら、階段の脇に細い通路を空けておく。
  */
-export function holeMask(v) {
-  if (v.kind === V_OPEN) return 0xffff;                // 床そのものがない
-  let m = 0;
-  if (v.kind === V_SHAFT) {
-    const i0 = (v.corner === 1 || v.corner === 2) ? 2 : 0;
-    const j0 = (v.corner === 2 || v.corner === 3) ? 2 : 0;
-    for (let j = j0; j < j0 + 2; j++) for (let i = i0; i < i0 + 2; i++) m |= 1 << (i + j * 4);
-  } else {
-    // 階段は中央半分を占める。いちばん奥の一列は残す——そこが上りきった先の踊り場になる。
-    const along = v.dir === 0 || v.dir === 1 ? 0 : 1;
-    const rev = v.dir === 1 || v.dir === 5;
-    for (let r = 0; r < 3; r++) {
-      const a = rev ? 3 - r : r;
-      for (let p = 1; p <= 2; p++) {
-        const i = along === 0 ? a : p, j = along === 0 ? p : a;
-        m |= 1 << (i + j * 4);
-      }
-    }
+function stairColumn(world, gx, gy, gz) {
+  const seed = world.seed;
+  const link = world.linkBits(gx, gy, gz);
+  let ly = gy, lower = link;
+  if ((link & 8) && world.vfeat(gx, gy - 1, gz) && world.vfeat(gx, gy - 1, gz).kind === V_STAIR) {
+    ly = gy - 1; lower = world.linkBits(gx, gy - 1, gz);
+  } else if (!((link & 4) && world.vfeat(gx, gy, gz) && world.vfeat(gx, gy, gz).kind === V_STAIR)) {
+    return null;
   }
-  return m;
+  const v = world.vfeat(gx, ly, gz);
+  const a = stairAxis(lower, v);
+  const up = world.linkBits(gx, ly + 1, gz);
+  const both = lower | up;
+  // 階段の脇に通路を空けるのは、上下のどちらかに本当に横道があるときだけ。
+  // なければ部屋いっぱいに広げて、左右をそのまま岩の壁にする。
+  const negBit = a.axis === 0 ? 32 : 2, posBit = a.axis === 0 ? 16 : 1;
+  let needNeg = (both & negBit) !== 0, needPos = (both & posBit) !== 0;
+  if ((lower & (1 << a.dir)) && !needNeg && !needPos) needNeg = true;   // 登り切った先にも道がある
+  const lanes = (needNeg ? 1 : 0) + (needPos ? 1 : 0);
+  const { w, d } = roomSize(seed, gx, ly, gz, lower);
+  const perp = Math.max(a.axis === 0 ? d : w, 1.55 + lanes * 0.88);
+  return { axis: a.axis, sign: a.sign, dir: a.dir, needNeg, needPos, lanes, perp, ly, v };
+}
+
+export function roomOf(world, gx, gy, gz) {
+  const seed = world.seed;
+  const link = world.linkBits(gx, gy, gz);
+  const yF = gy * LEVEL;
+  const ox = gx * CELL, oz = gz * CELL;
+  let y1 = yF + ceilHeight(seed, gx, gy, gz);
+  const upOpen = (link & 4) && world.vfeat(gx, gy, gz).kind === V_OPEN;
+
+  if (inBig(seed, gx, gy, gz)) {
+    // 大空間の中は、セルいっぱいに彫る。隣とぴったり面で接するので、
+    // 梁のような継ぎ目がいっさい出ない。
+    if (upOpen) y1 = yF + LEVEL;
+    const px = isBridge(seed, gx, gy, gz) ? PARAPET_T : 0;   // 橋は欄干のぶんだけ引っこむ
+    return { x0: ox + px, x1: ox + CELL - px, z0: oz, z1: oz + CELL,
+             y0: yF, y1, link, w: CELL - px * 2, d: CELL, big: true };
+  }
+  let w, d;
+  const col = stairColumn(world, gx, gy, gz);
+  if (col) {
+    // 走る向きは目いっぱい。横は上の階に必要なぶんだけ
+    w = col.axis === 0 ? ROOM_MAX : col.perp;
+    d = col.axis === 0 ? col.perp : ROOM_MAX;
+  } else {
+    ({ w, d } = roomSize(seed, gx, gy, gz, link));
+  }
+  const cx = ox + CELL / 2, cz = oz + CELL / 2;
+  return { x0: cx - w / 2, x1: cx + w / 2, z0: cz - d / 2, z1: cz + d / 2,
+           y0: yF, y1, link, w, d, big: false, col };
+}
+
+/**
+ * 隣の部屋へ貫く喉。d は 0(+X) か 4(+Z)。
+ * 幅がそろっているところは素通しにし、変わるところだけ戸口になる。
+ */
+export function throatOf(world, A, gx, gy, gz, d) {
+  if (!(A.link & (1 << d))) return null;
+  const nx = gx + DX[d], nz = gz + DZ[d];
+  const B = roomOf(world, nx, gy, nz);
+  const seed = world.seed;
+  const along = d === 0;
+  const p0 = along ? Math.max(A.z0, B.z0) : Math.max(A.x0, B.x0);
+  const p1 = along ? Math.min(A.z1, B.z1) : Math.min(A.x1, B.x1);
+  if (p1 - p0 < 0.5) return null;
+  const perpA = along ? A.d : A.w, perpB = along ? B.d : B.w;
+  const h = hash32(seed, gx, gy, gz, 0xA9E0 + d);
+  let w = p1 - p0;
+  if (A.big && B.big) {
+    // 大空間どうしは面で接しているだけ。絞らない
+    const sill = linkSill(seed, gx, gy, gz, d);
+    return { lo: along ? A.x1 : A.z1, hi: along ? B.x0 : B.z0,
+             p0, p1, y0: A.y0 + sill, y1: Math.min(A.y1, B.y1), along, A, B };
+  }
+  if (Math.abs(perpA - perpB) > 0.12 || (h % 100) < 24) {
+    w = Math.max(1.35, Math.min(w, 1.35 + ((h >>> 7) % 100) / 100 * 1.9));
+  }
+  const mid = (p0 + p1) / 2;
+  const q0 = Math.max(p0, mid - w / 2), q1 = Math.min(p1, mid + w / 2);
+  const sill = linkSill(seed, gx, gy, gz, d);
+  let top = Math.min(A.y1, B.y1);
+  if (!sill && top - A.y0 >= 2.4 && ((h >>> 16) % 100) < 42) {
+    top = A.y0 + 2.05 + ((h >>> 22) % 100) / 100 * 0.35;
+  }
+  return {
+    lo: along ? A.x1 : A.z1, hi: along ? B.x0 : B.z0,
+    p0: q0, p1: q1, y0: A.y0 + sill, y1: top, along, A, B,
+  };
+}
+
+/** 床と天井の板を貫く縦穴。 */
+export function shaftOf(world, A, gx, gy, gz) {
+  const v = world.vfeat(gx, gy, gz);
+  if (!v) return null;
+  const B = roomOf(world, gx, gy + 1, gz);
+  const ix0 = Math.max(A.x0, B.x0), ix1 = Math.min(A.x1, B.x1);
+  const iz0 = Math.max(A.z0, B.z0), iz1 = Math.min(A.z1, B.z1);
+  if (ix1 - ix0 < 0.5 || iz1 - iz0 < 0.5) return null;
+  const box = { y0: A.y1, y1: B.y0, v, A, B };
+  if (v.kind === V_OPEN) return { ...box, x0: ix0, x1: ix1, z0: iz0, z1: iz1 };
+  if (v.kind === V_STAIR) {
+    const p = stairPlan(A, v);
+    if (p.axis === 0) {
+      const a0 = p.sign > 0 ? A.x0 : A.x1 - p.run;
+      const qc = (A.z0 + A.z1) / 2 + p.off, hw = p.width / 2;
+      return { ...box, x0: Math.max(ix0, a0), x1: Math.min(ix1, a0 + p.run),
+               z0: Math.max(iz0, qc - hw), z1: Math.min(iz1, qc + hw), stair: p };
+    }
+    const a0 = p.sign > 0 ? A.z0 : A.z1 - p.run;
+    const qc = (A.x0 + A.x1) / 2 + p.off, hw = p.width / 2;
+    return { ...box, x0: Math.max(ix0, qc - hw), x1: Math.min(ix1, qc + hw),
+             z0: Math.max(iz0, a0), z1: Math.min(iz1, a0 + p.run), stair: p };
+  }
+  // 落下穴。隅に寄せた四角。歩ける縁を必ず残す
+  const s = Math.min(2.5, ix1 - ix0 - 0.95, iz1 - iz0 - 0.95);
+  if (s < 0.8) return { ...box, x0: ix0, x1: ix1, z0: iz0, z1: iz1 };
+  const cnr = v.corner;
+  const x0 = (cnr === 1 || cnr === 2) ? ix1 - s : ix0;
+  const z0 = (cnr === 2 || cnr === 3) ? iz1 - s : iz0;
+  return { ...box, x0, x1: x0 + s, z0, z1: z0 + s };
+}
+
+/** 階段の据え方。横に道がなければ部屋いっぱいに広げ、左右を岩のままにする。 */
+/** 階段の据え方。横に道がなければ部屋いっぱいに広げ、左右をそのまま岩にする。 */
+export function stairPlan(A, v) {
+  const c = A.col || { axis: (v.dir === 0 || v.dir === 1) ? 0 : 1,
+                       sign: (v.dir === 0 || v.dir === 4) ? 1 : -1, dir: v.dir,
+                       needNeg: true, needPos: true, lanes: 2 };
+  const len = c.axis === 0 ? A.w : A.d;
+  const perp = c.axis === 0 ? A.d : A.w;
+  const run = Math.max(2.0, len - LANDING);
+  const width = Math.max(1.5, perp - c.lanes * 0.88);
+  // 通路の要らない側へ寄せて、そちら側は壁に密着させる
+  const off = ((c.needNeg ? 1 : 0) - (c.needPos ? 1 : 0)) * (perp - width) / 2;
+  return { axis: c.axis, sign: c.sign, dir: c.dir, run, width, off, full: c.lanes === 0, perp };
 }
 
 // ─── チャンク ────────────────────────────────────────────────────
@@ -171,9 +359,9 @@ function genBase(seed, kx, ky, kz) {
   const depthBias = Math.min(0.14, Math.max(0, -ky) * 0.012);
 
   for (let i = 0; i < NCELL; i++) c.solid[i] = rng() < density + depthBias ? 1 : 0;
-  // 巨大な空洞の中は必ず掘れている
+  // 大空間の中は必ず掘れている
   for (let i = 0; i < NCELL; i++) {
-    if (inVoid(seed, c.gx(i), c.gy(i), c.gz(i))) c.solid[i] = 0;
+    if (inBig(seed, c.gx(i), c.gy(i), c.gz(i))) c.solid[i] = 0;
   }
 
   // 空洞がばらけていたら、細い道を通してひとつにする。
@@ -228,7 +416,7 @@ function canLinkUp(seed, c, i) {
 function structuralUp(seed, c, i) {
   if (!canLinkUp(seed, c, i)) return false;
   const gx = c.gx(i), gy = c.gy(i), gz = c.gz(i);
-  if (inVoid(seed, gx, gy, gz) && inVoid(seed, gx, gy + 1, gz)) return true;
+  if (inBig(seed, gx, gy, gz) && inBig(seed, gx, gy + 1, gz)) return true;
   return baseVFeat(seed, gx, gy, gz).kind !== V_OPEN;
 }
 
@@ -237,15 +425,17 @@ function carveMaze(c, seed) {
   const rng = rngFor(seed, c.kx, c.ky, c.kz, 0x1B7D);
   const { solid, link } = c;
 
-  // 巨大な空洞の中は、はじめから全部ひと続きにしておく
+  // 大空間の中は、はじめから全部ひと続きにしておく。
+  // ただし橋の真下だけはつながない。橋の床は岩のままでなければならない。
   for (let y = 0; y < CY; y++) for (let z = 0; z < CD; z++) for (let x = 0; x < CW; x++) {
     const i = idx(x, y, z);
-    if (!inVoid(seed, c.gx(i), c.gy(i), c.gz(i))) continue;
+    if (!inBig(seed, c.gx(i), c.gy(i), c.gz(i))) continue;
     for (const d of [0, 2, 4]) {
       const nx = x + DX[d], ny = y + DY[d], nz = z + DZ[d];
       if (nx >= CW || ny >= CY || nz >= CD) continue;
       const j = idx(nx, ny, nz);
-      if (!inVoid(seed, c.gx(j), c.gy(j), c.gz(j))) continue;
+      if (!inBig(seed, c.gx(j), c.gy(j), c.gz(j))) continue;
+      if (d === 2 && isBridge(seed, c.gx(j), c.gy(j), c.gz(j))) continue;
       link[i] |= 1 << d; link[j] |= 1 << OPP[d];
     }
   }
@@ -283,21 +473,29 @@ function carveMaze(c, seed) {
     }
     if (!moved) stack.pop();
   }
-  // すでに空洞どうしが繋がっている（吹き抜けの先など）なら、その先も辿らせる
-  for (let i = 0; i < NCELL; i++) {
-    if (solid[i] || seen[i]) continue;
-    const x = i % CW, z = ((i / CW) | 0) % CD, y = (i / (CW * CD)) | 0;
-    for (let d = 0; d < 6; d++) {
-      const nx = x + DX[d], ny = y + DY[d], nz = z + DZ[d];
-      if (nx < 0 || nx >= CW || ny < 0 || ny >= CY || nz < 0 || nz >= CD) continue;
-      const j = idx(nx, ny, nz);
-      if (solid[j]) continue;
-      if (d === 2 && !structuralUp(seed, c, i)) continue;
-      if (d === 3 && !structuralUp(seed, c, j)) continue;
-      link[i] |= 1 << d; link[j] |= 1 << OPP[d];
-      seen[i] = 1; break;
+  // 取りこぼしたセルを、すでに繋がっている側へ手繰り寄せる。
+  // つなぐ相手は必ず「もう繋がっているセル」に限る。
+  // 取りこぼしどうしを結んでしまうと、本体から切り離された島ができてしまう。
+  for (let pass = 0; pass < CY + CW + CD; pass++) {
+    let grew = false;
+    for (let i = 0; i < NCELL; i++) {
+      if (solid[i] || seen[i]) continue;
+      const x = i % CW, z = ((i / CW) | 0) % CD, y = (i / (CW * CD)) | 0;
+      for (let d = 0; d < 6; d++) {
+        const nx = x + DX[d], ny = y + DY[d], nz = z + DZ[d];
+        if (nx < 0 || nx >= CW || ny < 0 || ny >= CY || nz < 0 || nz >= CD) continue;
+        const j = idx(nx, ny, nz);
+        if (solid[j] || !seen[j]) continue;
+        if (d === 2 && !structuralUp(seed, c, i)) continue;
+        if (d === 3 && !structuralUp(seed, c, j)) continue;
+        link[i] |= 1 << d; link[j] |= 1 << OPP[d];
+        seen[i] = 1; grew = true; break;
+      }
     }
+    if (!grew) break;
   }
+  // それでも届かなかったセルは、掘られなかったことにする（岩のまま）
+  for (let i = 0; i < NCELL; i++) if (!solid[i] && !seen[i]) link[i] = 0;
 
   // 環。行き止まりだらけだと、戻る道が一本しかなくて息が詰まる
   for (let i = 0; i < NCELL; i++) {
@@ -316,18 +514,22 @@ function carveMaze(c, seed) {
     }
   }
 
-  // 巨大な空洞の壁に、あちこちの高さから穴を開ける。
+  // 大空間の壁に、あちこちの高さから穴を開ける。
   // 見上げれば道が見えるのに、そこへは行けない——という眺めがこれで生まれる。
+  // 橋の両端と、いちばん底には、必ず出入口を作る。
   for (let y = 0; y < CY; y++) for (let z = 0; z < CD; z++) for (let x = 0; x < CW; x++) {
     const i = idx(x, y, z);
-    if (!inVoid(seed, c.gx(i), c.gy(i), c.gz(i))) continue;
-    const bottom = !inVoid(seed, c.gx(i), c.gy(i) - 1, c.gz(i));
+    const gx = c.gx(i), gy = c.gy(i), gz = c.gz(i);
+    if (!inBig(seed, gx, gy, gz)) continue;
+    const bottom = !inBig(seed, gx, gy - 1, gz);
+    const bridge = isBridge(seed, gx, gy, gz);
     for (const d of HDIRS) {
       const nx = x + DX[d], nz = z + DZ[d];
       if (nx < 0 || nx >= CW || nz < 0 || nz >= CD) continue;
       const j = idx(nx, y, nz);
-      if (solid[j] || inVoid(seed, c.gx(j), c.gy(j), c.gz(j))) continue;
-      if (rng() < (bottom ? 0.75 : 0.16)) { link[i] |= 1 << d; link[j] |= 1 << OPP[d]; }
+      if (solid[j] || inBig(seed, c.gx(j), gy, c.gz(j))) continue;
+      const p = bridge ? 0.92 : bottom ? 0.75 : 0.16;
+      if (rng() < p) { link[i] |= 1 << d; link[j] |= 1 << OPP[d]; }
     }
   }
 
@@ -373,9 +575,9 @@ function openBorders(c, seed, baseOf) {
         if (isLowCeil(seed, gx, ly, gz)) return;
         if (baseVFeat(seed, gx, ly, gz).kind === V_OPEN) return;
       }
-      if (inVoid(seed, gx, gy, gz) && inVoid(seed, gx + DX[d], gy + DY[d], gz + DZ[d])) {
-        c.link[a] |= 1 << d;                              // 空洞どうしは無条件
-        return;
+      if (inBig(seed, gx, gy, gz) && inBig(seed, gx + DX[d], gy + DY[d], gz + DZ[d])) {
+        if (!(d === 2 && isBridge(seed, gx, gy + 1, gz))) c.link[a] |= 1 << d;
+        return;                                           // 大空間どうしは無条件
       }
       cand.push(a);
     };
@@ -432,7 +634,9 @@ function repairWalk(c, seed) {
   for (let y = 0; y < CY; y++) for (let z = 0; z < CD; z++) for (let x = 0; x < CW; x++) {
     const i = idx(x, y, z);
     if (solid[i] || !floorOf[i]) continue;
-    if ((link[i] & 1) && x + 1 < CW && floorOf[idx(x + 1, y, z)] && uni(i, idx(x + 1, y, z))) comps--;
+    const gx = c.gx(i), gy = c.gy(i), gz = c.gz(i);
+    if ((link[i] & 1) && x + 1 < CW && floorOf[idx(x + 1, y, z)]
+        && walkable(seed, gx, gy, gz, 0) && uni(i, idx(x + 1, y, z))) comps--;
     if ((link[i] & 16) && z + 1 < CD && floorOf[idx(x, y, z + 1)] && uni(i, idx(x, y, z + 1))) comps--;
     if ((link[i] & 4) && y + 1 < CY) {
       const k = kindOf(i);

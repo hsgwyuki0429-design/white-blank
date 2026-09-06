@@ -1,6 +1,6 @@
 // 落下も吹き抜けも一方通行。だから「行けるところから、必ず帰ってこられるか」を確かめる。
 // 前向きの辺をぜんぶ作ってから逆向きに辿り、集合が一致するかを見る。
-import { World, DX, DZ, V_STAIR, V_OPEN } from '../src/world.js';
+import { World, DX, DZ, walkable, V_STAIR, V_OPEN } from '../src/world.js';
 
 const R = Number(process.argv[3] || 20);
 const seeds = process.argv[2] ? [Number(process.argv[2])] : [1, 7, 12345, 999, 4242, 31337, 8080, 55555];
@@ -35,6 +35,7 @@ for (const seed of seeds) {
     stand.push([x, y, z]);
     for (const d of [0, 1, 4, 5]) {
       if (!w.linked(x, y, z, d)) continue;
+      if (!walkable(seed, x, y, z, d)) continue;      // 欄干のある口は越えられない
       const t = fall(x + DX[d], y, z + DZ[d]);
       if (t) add(a, t.join(','));
     }
