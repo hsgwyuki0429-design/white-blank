@@ -4,7 +4,14 @@
   "type": "module",
   "scripts": {
     "start": "python3 -m http.server 8080",
-    "shot": "node tools/shot.mjs"
+    "shot": "node tools/shot.mjs",
+    "build": "node tools/build.mjs",
+    "test": "node tools/catalog.mjs && node tools/reach.mjs && node tools/gaps.mjs",
+    "test:landmarks": "node tools/landmarks.mjs --all",
+    "test:geometry": "node tools/landmark-geometry.mjs",
+    "test:touch": "node tools/touch.mjs",
+    "test:browser": "node tools/check.mjs",
+    "review:landmarks": "node tools/landmark-browser.mjs"
   },
   "devDependencies": {
     "playwright": "^1.48.2"

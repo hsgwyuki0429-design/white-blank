@@ -33,7 +33,8 @@ function shade(d0, d1, d2, d3, occ, tint) {
 }
 
 class Builder {
-  constructor() {
+  constructor(detail = 1) {
+    this.sub = SUB * detail;
     this.pos = []; this.nrm = []; this.col = []; this.uv = []; this.idx = [];
     this.mpos = []; this.mnrm = []; this.muv = [];
     this.tri = [];
@@ -101,8 +102,8 @@ function emitFace(b, kind, coord, s, u0, u1, v0, v1, hole, sh, collide = true) {
   const P = PT[kind], n = NRM[kind](s), flip = FLIP(kind, s);
   for (const [a0, a1, c0, c1] of parts) {
     if (a1 - a0 < 0.004 || c1 - c0 < 0.004) continue;
-    const nu = Math.max(1, Math.round((a1 - a0) / SUB));
-    const nv = Math.max(1, Math.round((c1 - c0) / SUB));
+    const nu = Math.max(1, Math.round((a1 - a0) / b.sub));
+    const nv = Math.max(1, Math.round((c1 - c0) / b.sub));
     for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
       const ua = a0 + (a1 - a0) * (i / nu), ub = a0 + (a1 - a0) * ((i + 1) / nu);
       const va = c0 + (c1 - c0) * (j / nv), vb = c0 + (c1 - c0) * ((j + 1) / nv);
@@ -288,9 +289,10 @@ function emitStair(b, A, sb, tint) {
 }
 
 /** チャンク1つぶんの見た目と当たり判定を作る。 */
-export function buildChunk(world, kx, ky, kz) {
+export function buildChunk(world, kx, ky, kz, detail = 1) {
   const c = world.chunk(kx, ky, kz);
-  const b = new Builder();
+  // Distant chunks need fewer AO samples, but identical face boundaries and collision.
+  const b = new Builder(detail);
   const triStart = new Int32Array(NCELL + 1);
   for (let y = 0; y < CY; y++) for (let z = 0; z < CD; z++) for (let x = 0; x < CW; x++) {
     const i = idx(x, y, z);

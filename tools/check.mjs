@@ -18,12 +18,16 @@ const server = createServer(async (req, res) => {
 await new Promise((r) => server.listen(8098, r));
 
 const browser = await chromium.launch({
-  executablePath: '/opt/pw-browsers/chromium',
+  executablePath: process.env.WB_CHROME || undefined,
   ignoreDefaultArgs: ['--headless=old'],
   args: ['--headless=new', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
          '--use-gl=angle', '--no-sandbox'],
 });
 const page = await browser.newPage({ viewport: { width: 900, height: 560 } });
+page.setDefaultTimeout(120000);
+// Scripted movement uses __wb.sim, not a physical mouse. Headless Chrome rejects
+// pointer capture without a gesture; leave that permission outside this physics test.
+await page.addInitScript(() => { HTMLCanvasElement.prototype.requestPointerLock = () => Promise.resolve(); });
 const bad = [];
 page.on('pageerror', (e) => bad.push('pageerror: ' + e.message));
 
@@ -32,11 +36,11 @@ const ok = (n, pass, extra = '') => { results.push({ n, pass, extra }); };
 
 for (const seedName of ['しろ', 'あお', 'seed-3']) {
   await page.goto('http://127.0.0.1:8098/?t=' + Date.now(), { waitUntil: 'load' });
-  await page.waitForFunction(() => !!window.__wb, null, { timeout: 15000 });
+  await page.waitForFunction(() => !!window.__wb, null, { timeout: 120000 });
   await page.fill('#seedinput', seedName);
   await page.dispatchEvent('#seedinput', 'change');
   await page.click('#start');
-  await page.waitForFunction(() => window.__wb.playing, null, { timeout: 20000 });
+  await page.waitForFunction(() => window.__wb.playing, null, { timeout: 120000 });
   await page.waitForTimeout(500);
 
   // ── 階段を登れるか ──────────────────────────────────

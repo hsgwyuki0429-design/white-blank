@@ -12,6 +12,8 @@ import {
   V_SHAFT, V_STAIR, V_OPEN, PARAPET,
 } from './dims.js';
 import { hash32 } from './rng.js';
+import { LANDMARK_CATALOG, selectLandmark, compileLandmark } from './landmark-catalog.js';
+export { LANDMARK_CATALOG, RARITY_WEIGHT } from './landmark-catalog.js';
 
 export const LM_CATHEDRAL = 0;   // 白い柱の大広間
 export const LM_COMPRESSION = 1; // 圧縮通路
@@ -19,7 +21,8 @@ export const LM_STAIRHALL = 2;   // 階段だけの大広間
 export const LM_STACKED = 3;     // 多層通路空間
 export const LM_NESTED = 4;      // 部屋の中の部屋
 export const LM_DESCENT = 5;     // 異常に深い降下空間
-export const LM_NAMES = ['cathedral', 'compression', 'stairs', 'stacked', 'nested', 'descent'];
+export const LM_NAMES = ['cathedral', 'compression', 'stairs', 'stacked', 'nested', 'descent',
+  ...LANDMARK_CATALOG.map(e => e.id)];
 
 const CG = 24;          // ランドマークを置く粗い格子（セル数）＝ 134m
 const MARGIN = 2;       // 粗い目のふちに残す余白
@@ -29,12 +32,15 @@ const score = (seed, cx, cz) => hash32(seed, cx, cz, 0x1AA7);
 /** 粗い目 (cx,cz) のランドマーク。周り8目より強いときだけ置く。 */
 function boxAtCoarse(seed, cx, cz) {
   const h = score(seed, cx, cz);
-  if (h % 100 >= 58) return null;
+  // Preserve every legacy candidate, its kind, dimensions and seed. New places only
+  // occupy previously empty winners, with the same exclusion grid and priority.
+  if (h % 100 >= 86) return null;
   for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
     if (!dx && !dz) continue;
     if (score(seed, cx + dx, cz + dz) > h) return null;   // 隣に強いものがあれば譲る
   }
-  const kind = (h >>> 7) % 6;
+  const entry = h % 100 >= 58 ? selectLandmark(hash32(seed, cx, cz, 0x100CA7) / 4294967296) : null;
+  const kind = entry ? LANDMARK_CATALOG.indexOf(entry) + 6 : (h >>> 7) % 6;
   const r = (n, k) => ((h >>> k) % 1024) / 1024 * n;
 
   let W, D, H;
@@ -46,6 +52,7 @@ function boxAtCoarse(seed, cx, cz) {
     case LM_NESTED:      W = 11; D = 11; H = 3 + ((h >>> 17) % 3); break;
     default:             W = 3; D = 3; H = 9 + ((h >>> 17) % 8); break;
   }
+  if (entry) [W, D, H] = entry.size;
   const spanX = CG - MARGIN * 2 - W, spanZ = CG - MARGIN * 2 - D;
   if (spanX < 1 || spanZ < 1) return null;
   const x0 = cx * CG + MARGIN + ((h >>> 20) % spanX);
@@ -54,10 +61,27 @@ function boxAtCoarse(seed, cx, cz) {
   const y0 = y1 - H + 1;
   const L = { kind, seed: hash32(seed, cx, cz, 0x5AFE), W, D, H,
               x0, x1: x0 + W - 1, z0, z1: z0 + D - 1, y0, y1 };
+  if (entry) {
+    L.id = entry.id; L.rarity = entry.rarity;
+    Object.defineProperty(L, 'gates', { enumerable: true, get: () => compiled(entry).gates });
+    return L;
+  }
   L.params = paramsOf(L);
   L.spine = spineOf(L);
   L.gates = gatesOf(L);
   return L;
+}
+
+// Bounded recipe cache: geometry is still built and released by the chunk streamer.
+// Only eight recently queried designs occupy cell arrays at once.
+const designs = new Map();
+function compiled(entry) {
+  if (designs.has(entry.id)) {
+    const c = designs.get(entry.id); designs.delete(entry.id); designs.set(entry.id, c); return c;
+  }
+  const c = compileLandmark(entry);
+  if (designs.size >= 8) designs.delete(designs.keys().next().value);
+  designs.set(entry.id, c); return c;
 }
 
 const cache = new Map();
@@ -265,6 +289,11 @@ export function lmCell(seed, gx, gy, gz) {
 }
 
 function shape(L, ix, iy, iz) {
+  if (L.kind >= 6) {
+    const c = compiled(LANDMARK_CATALOG[L.kind - 6]);
+    // lmCell adds gate bits. Never mutate the shared compiled recipe.
+    return { ...c.cells[c.index(ix, iy, iz)] };
+  }
   switch (L.kind) {
     case LM_CATHEDRAL: return cathedral(L, ix, iy, iz);
     case LM_COMPRESSION: return compression(L, ix, iy, iz);
@@ -450,7 +479,7 @@ function nested(L, ix, iy, iz) {
 
 const cellCache = new Map();
 function cellAt(seed, gx, gy, gz) {
-  const k = gx + ':' + gy + ':' + gz;
+  const k = (seed >>> 0) + ':' + gx + ':' + gy + ':' + gz;
   if (cellCache.has(k)) return cellCache.get(k);
   if (cellCache.size > 20000) cellCache.clear();
   const v = lmCell(seed, gx, gy, gz);

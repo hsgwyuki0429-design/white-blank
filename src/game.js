@@ -1,3 +1,4 @@
+import { createTouchControls } from './touch.js';
 // 白い地下迷宮。
 //
 // やることはひとつ。歩いて、扉を見つけること。
@@ -6,7 +7,7 @@
 import * as THREE from 'three';
 import { World, CW, CY, CD, CELL, LEVEL, fdiv, isLowCeil, inBig as isBigAt,
          isBridge, roomOf, shaftOf, stairPlan, V_STAIR,
-         findLandmarks, landmarkOf, LM_NAMES, LM_CATHEDRAL, LM_COMPRESSION,
+         findLandmarks, landmarkOf, landmarkNear, LM_NAMES, LM_CATHEDRAL, LM_COMPRESSION,
          LM_STAIRHALL, LM_STACKED, LM_NESTED, LM_DESCENT } from './world.js';
 import { buildChunk } from './mesher.js';
 import { Colliders, step as physStep, EYE } from './physics.js';
@@ -152,26 +153,50 @@ function wantChunks(px, py, pz) {
   const ky = fdiv(Math.floor(py / LEVEL), CY);
   const kz = fdiv(Math.floor(pz / CELL), CD);
   const want = new Set();
+  const request = (x,y,z) => {
+    const k = x + ',' + y + ',' + z;
+    want.add(k);
+    const near=Math.abs(x-kx)<=RENDER_R&&Math.abs(y-ky)<=RENDER_RY&&Math.abs(z-kz)<=RENDER_R;
+    if ((!loaded.has(k)||loaded.get(k).lod===near) && !queued.has(k)) {
+      queued.add(k);
+      queue.push({ k, x, y, z, d:(x-kx)**2+(y-ky)**2*2+(z-kz)**2 });
+    }
+  };
   for (let dy = -RENDER_RY; dy <= RENDER_RY; dy++)
     for (let dz = -RENDER_R; dz <= RENDER_R; dz++)
-      for (let dx = -RENDER_R; dx <= RENDER_R; dx++) {
-        const k = (kx + dx) + ',' + (ky + dy) + ',' + (kz + dz);
-        want.add(k);
-        if (!loaded.has(k) && !queued.has(k)) {
-          queued.add(k);
-          queue.push({ k, x: kx + dx, y: ky + dy, z: kz + dz, d: dx * dx + dy * dy * 2 + dz * dz });
+      for (let dx = -RENDER_R; dx <= RENDER_R; dx++) request(kx+dx,ky+dy,kz+dz);
+  // A 90m silhouette cannot be a reward if the old 30m fog erases it. Load only
+  // the one authored volume being approached, then reveal its distant surfaces.
+  const gx=Math.floor(px/CELL),gy=Math.floor((py+.35)/LEVEL),gz=Math.floor(pz/CELL);
+  const L=landmarkNear(world.seed,gx,gz);
+  let complete=true,far=FOG_FAR;
+  if(L?.kind>=6&&gx>=L.x0-1&&gx<=L.x1+1&&gz>=L.z0-1&&gz<=L.z1+1&&gy>=L.y0&&gy<=L.y1){
+    for(let y=fdiv(L.y0,CY);y<=fdiv(L.y1,CY);y++)
+      for(let z=fdiv(L.z0,CD);z<=fdiv(L.z1,CD);z++)
+        for(let x=fdiv(L.x0,CW);x<=fdiv(L.x1,CW);x++){
+          request(x,y,z);if(!loaded.has(x+','+y+','+z))complete=false;
         }
-      }
+    if(complete)far=Math.min(100,Math.max(35,Math.max(L.W,L.D)*CELL+10));
+  }
+  scene.fog.far=far;
   for (const k of [...loaded.keys()]) if (!want.has(k)) disposeChunk(k);
-  queue = queue.filter((q) => want.has(q.k));
+  queue = queue.filter((q) => {
+    if (want.has(q.k)) return true;
+    queued.delete(q.k); return false;
+  });
   queue.sort((a, b) => a.d - b.d);
   return want;
 }
 
 function buildAt(kx, ky, kz) {
   const k = kx + ',' + ky + ',' + kz;
-  if (loaded.has(k)) return;
-  const built = buildChunk(world, kx, ky, kz);
+  const lod=Math.abs(kx-fdiv(Math.floor(body.x/CELL),CW))>RENDER_R ||
+    Math.abs(ky-fdiv(Math.floor(body.y/LEVEL),CY))>RENDER_RY ||
+    Math.abs(kz-fdiv(Math.floor(body.z/CELL),CD))>RENDER_R;
+  const old=loaded.get(k);
+  if (old && old.lod === lod) return;
+  if (old) disposeChunk(k);
+  const built = buildChunk(world, kx, ky, kz, lod ? 2 : 1);
   const mesh = new THREE.Mesh(built.geom, wallMat);
   mesh.matrixAutoUpdate = false;
   scene.add(mesh); meshList.push(mesh);
@@ -181,17 +206,17 @@ function buildAt(kx, ky, kz) {
     marks.matrixAutoUpdate = false; marks.renderOrder = 1;
     scene.add(marks);
   }
-  loaded.set(k, { mesh, marks });
+  loaded.set(k, { mesh, marks, lod });
   col.set(k, built);
   queued.delete(k);
 }
 
 /** 1フレームにいくつかだけ組み立てる。全部いっぺんに作ると画面が固まる。 */
-function flushQueue(budget) {
+function flushQueue(budget, timeBudget = Infinity) {
+  const start=performance.now();
   let n = 0;
-  while (queue.length && n < budget) {
+  while (queue.length && n < budget && performance.now()-start < timeBudget) {
     const q = queue.shift(); queued.delete(q.k);
-    if (loaded.has(q.k)) continue;
     buildAt(q.x, q.y, q.z);
     n++;
   }
@@ -357,6 +382,15 @@ const keys = new Set();
 let yaw = 0, pitch = 0, bob = 0, dip = 0, sway = 0;
 let running = false, playing = false, walkedTotal = 0, openSm = 0.3;
 const sound = new Sound();
+function markWall() {
+  const r = toggleMark();
+  if (r) { sound.scratch(r === 'draw'); toast(r === 'draw' ? '刻んだ' : '消した'); }
+}
+const touch = createTouchControls({
+  look(dx, dy) { yaw -= dx; pitch = Math.max(-1.52, Math.min(1.52, pitch - dy)); },
+  mark: markWall, pause,
+});
+document.addEventListener('visibilitychange', () => { if (document.hidden && playing) pause(); });
 
 function findSpawn(w) {
   for (let r = 0; r < 26; r++)
@@ -378,10 +412,8 @@ addEventListener('keydown', (e) => {
   if (keys.has(e.code)) return;
   keys.add(e.code);
   if (!playing) return;
-  if (e.code === 'KeyE') {
-    const r = toggleMark();
-    if (r) { sound.scratch(r === 'draw'); toast(r === 'draw' ? '刻んだ' : '消した'); }
-  }
+  if (e.code === 'KeyE') markWall();
+  if (e.code === 'Escape') pause();
 });
 addEventListener('keyup', (e) => keys.delete(e.code));
 addEventListener('blur', () => keys.clear());
@@ -396,7 +428,7 @@ addEventListener('mousemove', (e) => {
 
 document.addEventListener('pointerlockchange', () => {
   const locked = document.pointerLockElement === canvas;
-  if (!locked && playing) pause();
+  if (!locked && playing && !touch.enabled) pause();
 });
 
 let toastT = 0;
@@ -425,18 +457,19 @@ function frame(now) {
 
 function update(dt) {
   // 向き
+  yaw -= touch.state.turn * 1.8 * dt;
   head.rotation.set(0, yaw, 0);
   camera.rotation.set(pitch, 0, 0);
 
   // 進みたい方向
-  const f = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
+  const f = touch.state.dash ? 1 : touch.state.forward + (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
   const r = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
-  running = keys.has('ShiftLeft') || keys.has('ShiftRight');
+  running = touch.state.dash || keys.has('ShiftLeft') || keys.has('ShiftRight');
   let wx = 0, wz = 0;
   if (f || r) {
     const sy = Math.sin(yaw), cy = Math.cos(yaw);
     let dx = -sy * f + cy * r, dz = -cy * f - sy * r;
-    const l = Math.hypot(dx, dz); dx /= l; dz /= l;
+    const l = Math.max(1, Math.hypot(dx, dz)); dx /= l; dz /= l;
     const sp = running ? RUN : WALK;
     wx = dx * sp; wz = dz * sp;
   }
@@ -451,7 +484,7 @@ function update(dt) {
     if (body.gny > 0.02) {
       body.vy = -(body.vx * body.gnx + body.vz * body.gnz) / body.gny - 0.5;
     }
-    if (keys.has('Space')) { body.vy = JUMP; body.grounded = false; }
+    if (keys.has('Space') || touch.state.jump) { body.vy = JUMP; body.grounded = false; }
   }
 
   const px = body.x, py = body.y, pz = body.z;
@@ -475,7 +508,7 @@ function update(dt) {
 
   // 世界の出し入れ
   wantChunks(body.x, body.y, body.z);
-  flushQueue(2);
+  flushQueue(2, 6);
 
   // 音
   const cx = Math.floor(body.x / CELL), cz = Math.floor(body.z / CELL);
@@ -516,7 +549,14 @@ function update(dt) {
  */
 function jumpToLandmark(name) {
   const kind = LM_NAMES.indexOf(name);
-  const list = findLandmarks(world.seed, kind < 0 ? undefined : kind, 9);
+  if (kind < 0) return null;
+  let list = [];
+  // Rare IDs may be kilometres away. Expand the real seeded search, never substitute
+  // another kind or inject a debug-only landmark that cannot occur naturally.
+  for (const radius of [9, 30, 90, 240, 480]) {
+    list = findLandmarks(world.seed, kind, radius);
+    if (list.length) break;
+  }
   if (!list.length) return null;
   list.sort((a, b) => (a.x0 * a.x0 + a.z0 * a.z0) - (b.x0 * b.x0 + b.z0 * b.z0));
   const L = list[0];
@@ -539,6 +579,7 @@ function jumpToLandmark(name) {
   head.position.set(body.x, body.y + EYE, body.z);
   wantChunks(body.x, body.y, body.z);
   flushQueue(999);
+  wantChunks(body.x, body.y, body.z);
   return { kind: LM_NAMES[L.kind], at: [L.x0, L.y0, L.z0], size: [L.W, L.D, L.H] };
 }
 const DXV = [1, -1, 0, 0, 0, 0], DZV = [0, 0, 0, 0, 1, -1];
@@ -546,6 +587,7 @@ function yawSet(y, p) { yaw = y; pitch = p; }
 
 // ── 始まりと終わり ───────────────────────────────────────
 function setupWorld(seed) {
+  keys.clear(); touch.reset();
   clearWorld();
   world = new World(seed);
   cleared = false; walkedTotal = 0; bob = 0; dip = 0;
@@ -579,12 +621,17 @@ function begin() {
   $('hud').hidden = false;
   $('clear').hidden = true;
   sound.start(); sound.resume();
-  canvas.requestPointerLock?.();
+  touch.show(true);
+  if (!touch.enabled) {
+    try { canvas.requestPointerLock?.()?.catch(() => {}); } catch {}
+  }
   last = performance.now();
 }
 
 function pause() {
   playing = false;
+  touch.show(false);
+  document.exitPointerLock?.();
   $('overlay').classList.remove('hide');
   $('start').textContent = 'つづける';
   sound.suspend();
@@ -593,6 +640,7 @@ function pause() {
 
 function doClear() {
   cleared = true; playing = false;
+  keys.clear(); touch.show(false);
   document.exitPointerLock?.();
   sound.clear();
   $('hud').hidden = true;
@@ -657,9 +705,13 @@ requestAnimationFrame(frame);
 // 開発中の覗き窓。ブラウザの外から様子を見るのに使う。
 window.__wb = {
   body, scene, renderer, camera,
+  get touchInput() { return { ...touch.state }; },
   get playing() { return playing; },
   get world() { return world; },
   get chunks() { return loaded.size; },
+  get renderStats() { return { calls:renderer.info.render.calls, triangles:renderer.info.render.triangles,
+    geometries:renderer.info.memory.geometries, fogFar:scene.fog.far, queued:queue.length,
+    lodChunks:[...loaded.values()].filter(e=>e.lod).length }; },
   look(y, p) { yaw = y; if (p !== undefined) pitch = p; },
   put(x, y, z) { body.x = x; body.y = y; body.z = z; body.vx = body.vy = body.vz = 0; },
   goal: () => goal,
