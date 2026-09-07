@@ -5,7 +5,8 @@ import {
   DX, DY, DZ, OPP, MIN_GAP, MIN_HEAD, V_STAIR,
 } from '../src/world.js';
 
-const SEEDS = process.argv[2] ? [Number(process.argv[2])] : [1, 7, 12345, 999, 4242, 31337];
+const ALL = process.argv.includes('--all');
+const SEEDS = ALL ? [12345] : process.argv[2] ? [Number(process.argv[2])] : [1, 7, 12345, 999, 4242, 31337];
 const RADIUS = 6;                     // 探す粗い目の広さ
 let fail = 0;
 const bad = (msg) => { fail++; console.log('  NG  ' + msg); };
@@ -60,9 +61,15 @@ const sig = (w, L) => {
 };
 
 const found = new Map();
+const samePlace = (a,b) => !!a && !!b && a.kind===b.kind && a.seed===b.seed && a.x0===b.x0 && a.y0===b.y0 && a.z0===b.z0;
 for (const seed of SEEDS) {
-  const w = new World(seed), w2 = new World(seed);
-  for (const L of findLandmarks(seed, undefined, RADIUS)) {
+  let sample = findLandmarks(seed, undefined, ALL ? 480 : RADIUS);
+  if (ALL) {
+    sample.sort((a,b)=>Math.hypot(a.x0,a.z0)-Math.hypot(b.x0,b.z0));
+    sample = [...new Map(sample.toReversed().map(L=>[L.kind,L])).values()];
+  }
+  for (const L of sample) {
+    const w = new World(seed), w2 = new World(seed);
     const name = LM_NAMES[L.kind];
     found.set(name, (found.get(name) || 0) + 1);
     const tag = `種${seed} ${name} ${L.W}x${L.D}x${L.H} @${L.x0},${L.y0},${L.z0}`;
@@ -70,8 +77,8 @@ for (const seed of SEEDS) {
     // 囲みが正しいか
     if (L.x1 - L.x0 + 1 !== L.W || L.z1 - L.z0 + 1 !== L.D || L.y1 - L.y0 + 1 !== L.H)
       bad(tag + ' … 囲みの寸法が合わない');
-    if (landmarkOf(seed, L.x0 - 1, L.y0, L.z0) === L) bad(tag + ' … 囲みの外にはみ出している');
-    if (landmarkOf(seed, L.x0, L.y0, L.z0) !== L) bad(tag + ' … 囲みの中が空');
+    if (samePlace(landmarkOf(seed, L.x0 - 1, L.y0, L.z0), L)) bad(tag + ' … 囲みの外にはみ出している');
+    if (!samePlace(landmarkOf(seed, L.x0, L.y0, L.z0), L)) bad(tag + ' … 囲みの中が空');
 
     // 同じ種なら同じ形
     if (sig(w, L) !== sig(w2, L)) bad(tag + ' … 作り直すと形が変わる');
@@ -114,12 +121,12 @@ for (const seed of SEEDS) {
     if (!pair) bad(tag + ' … 口から口へ、行って帰ってこられない');
 
     // 中にどれだけ立てる場所があるか（空っぽでないこと）
-    const inside = G.stand.filter((c) => landmarkOf(seed, c[0], c[1], c[2]) === L).length;
+    const inside = G.stand.filter((c) => samePlace(landmarkOf(seed, c[0], c[1], c[2]), L)).length;
     if (inside < 4) bad(tag + ` … 中に立てる場所が ${inside} しかない`);
   }
 }
 
 console.log('\n見つかったランドマーク: ' + [...found].map(([k, v]) => `${k} ${v}`).join(' / '));
-for (const n of LM_NAMES) if (!found.has(n)) bad(`${n} が一つも生成されなかった`);
+for (const n of (ALL ? LM_NAMES : LM_NAMES.slice(0,6))) if (!found.has(n)) bad(`${n} が一つも生成されなかった`);
 console.log(fail ? `\n${fail} 件の問題` : '\nすべてのランドマークが、入れて・渡れて・帰ってこられる');
 process.exit(fail ? 1 : 0);

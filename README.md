@@ -90,6 +90,25 @@ python3 -m http.server 8080     # あるいは任意の静的サーバ
 開発中は URL に `?landmark=cathedral` のように付けると、その場所へ直接立てる
 （`cathedral` / `compression` / `stairs` / `stacked` / `nested` / `descent`）。
 
+### さらに100種類の探索空間
+
+既存6種類を残し、`LM_001`〜`LM_100`を追加。
+門、天井、岩の塊、部屋、経路、縦空間、登れる回廊、足元の違和感、視点の錯覚、巨大な象徴の10系統。
+100個の異なる空洞構成を持ち、common 38 / uncommon 34 / rare 18 / very rare 10種類。
+色ではなく、見通し・遮蔽・輪郭・内部構造で見分ける。
+
+入口の向こうの変な形へ近づき、回り込むと別の空間が見つかる。
+14種類には登れる上段があり、巨大なものは近づいた場所だけ遠くまで読み込んで見通せる。
+通常迷路の読み込み範囲は変えず、離れた空間の描画・衝突は解放する。
+
+[全100種類の設計・寸法・rarity・生成規則](docs/landmarks-100.md)。
+[検証結果と全100種類の入口画像](docs/landmark-verification.md)。
+開発用URLは `?landmark=LM_001` など。希少な種類の検索には時間がかかる場合がある。
+`npm run build` で検査済みの静的配布物を `dist/` に生成する。
+
+追加検証: `npm test` / `npm run test:landmarks` / `npm run test:geometry` / `npm run test:browser`。
+`node tools/legacy-landmarks.mjs` で元コミットの6種類の配置と形状を比較できる。
+
 ## 中身
 
 素材ファイルは一枚もない。地形も、壁の肌も、字形も、音も、すべてその場で作っている。

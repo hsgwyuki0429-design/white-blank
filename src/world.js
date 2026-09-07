@@ -90,6 +90,7 @@ export function inChasm(seed, gx, gy, gz) {
 
 /** 裂け目を横断する橋。だいたい7セルに1本、高さはばらばら。 */
 export function isBridge(seed, gx, gy, gz) {
+  if (inLandmark(seed, gx, gy, gz)) return false;
   const b = chasmBox(seed, gx, gz);
   if (!b || gx <= b.x0 || gx >= b.x1 || gz < b.z0 || gz > b.z1) return false;
   if (gy <= b.y0 || gy >= b.y1) return false;

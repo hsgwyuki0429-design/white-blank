@@ -20,7 +20,7 @@ const server = createServer(async (req, res) => {
 await new Promise((r) => server.listen(8099, r));
 
 const browser = await chromium.launch({
-  executablePath: process.env.WB_CHROME || '/opt/pw-browsers/chromium',
+  executablePath: process.env.WB_CHROME || undefined,
   ignoreDefaultArgs: ['--headless=old'],
   args: ['--headless=new', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
          '--use-gl=angle', '--disable-gpu-sandbox', '--no-sandbox'],
