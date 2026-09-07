@@ -116,7 +116,7 @@ canvas#view{position:fixed;inset:0;width:100%;height:100%;display:block;touch-ac
 #stick-ring{position:absolute;left:50%;bottom:max(55px,env(safe-area-inset-bottom));width:112px;height:112px;margin-left:-56px;border:1px solid #7776;border-radius:50%;background:#ffffff30}
 #stick-knob{position:absolute;left:35px;top:35px;width:40px;height:40px;border-radius:50%;border:1px solid #7778;background:#eeeeeeb0}
 #touch-stick>span,#touch-dash>span{position:absolute;bottom:max(24px,env(safe-area-inset-bottom));width:100%;text-align:center;font-size:10px;line-height:1.8;color:#555a;pointer-events:none}
-#touch-dash.active{background:linear-gradient(transparent,#ffffff25)}
+#touch-dash.active{background:radial-gradient(circle at center,#ffffff20,transparent 65%)}
 #touch-actions{position:absolute;top:max(16px,env(safe-area-inset-top));right:max(16px,env(safe-area-inset-right));display:flex;gap:8px;pointer-events:auto}
 #touch-actions button{min-width:48px;min-height:48px;border:1px solid #8886;border-radius:8px;background:#f4f4f280;color:#555;font:inherit;font-size:12px;touch-action:none}
 .touch #readout{top:max(16px,env(safe-area-inset-top));bottom:auto;left:max(16px,env(safe-area-inset-left))}
