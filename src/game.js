@@ -457,13 +457,12 @@ function frame(now) {
 
 function update(dt) {
   // 向き
-  yaw -= touch.state.turn * 1.8 * dt;
   head.rotation.set(0, yaw, 0);
   camera.rotation.set(pitch, 0, 0);
 
   // 進みたい方向
-  const f = touch.state.dash ? 1 : touch.state.forward + (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
-  const r = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+  const f = touch.state.forward + (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
+  const r = touch.state.strafe + (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
   running = touch.state.dash || keys.has('ShiftLeft') || keys.has('ShiftRight');
   let wx = 0, wz = 0;
   if (f || r) {
