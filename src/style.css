@@ -108,3 +108,19 @@ canvas#view{position:fixed;inset:0;width:100%;height:100%;display:block;touch-ac
   font-size:11px;letter-spacing:.28em;color:var(--ink-soft);
 }
 [hidden]{display:none !important}
+
+/* Separate touch pointers allow simultaneous steering and forward dash. */
+#touch-controls{position:fixed;inset:0;z-index:5;pointer-events:none;user-select:none;-webkit-user-select:none}
+#touch-stick,#touch-dash{position:absolute;top:80px;bottom:0;width:50%;pointer-events:auto;touch-action:none}
+#touch-stick{left:0}#touch-dash{right:0}
+#stick-ring{position:absolute;left:50%;bottom:max(55px,env(safe-area-inset-bottom));width:112px;height:112px;margin-left:-56px;border:1px solid #7776;border-radius:50%;background:#ffffff30}
+#stick-knob{position:absolute;left:35px;top:35px;width:40px;height:40px;border-radius:50%;border:1px solid #7778;background:#eeeeeeb0}
+#touch-stick>span,#touch-dash>span{position:absolute;bottom:max(24px,env(safe-area-inset-bottom));width:100%;text-align:center;font-size:10px;line-height:1.8;color:#555a;pointer-events:none}
+#touch-dash.active{background:linear-gradient(transparent,#ffffff25)}
+#touch-actions{position:absolute;top:max(16px,env(safe-area-inset-top));right:max(16px,env(safe-area-inset-right));display:flex;gap:8px;pointer-events:auto}
+#touch-actions button{min-width:48px;min-height:48px;border:1px solid #8886;border-radius:8px;background:#f4f4f280;color:#555;font:inherit;font-size:12px;touch-action:none}
+.touch #readout{top:max(16px,env(safe-area-inset-top));bottom:auto;left:max(16px,env(safe-area-inset-left))}
+.touch #keys{display:none}#touch-help{font-size:12px;line-height:2;color:#777}
+.touch #toast{bottom:190px}
+#overlay{overflow-y:auto;padding:24px 0}#panel{margin:auto}
+@media(max-height:500px){#panel .sub{margin:8px 0}#panel .note{margin:8px 0}#touch-help{margin:8px 0}#panel h1{font-size:26px}#seedbox{margin-bottom:8px}#start{padding:10px}#stick-ring{bottom:42px}#touch-stick>span,#touch-dash>span{bottom:12px}}

@@ -9,6 +9,7 @@
     "test": "node tools/catalog.mjs && node tools/reach.mjs && node tools/gaps.mjs",
     "test:landmarks": "node tools/landmarks.mjs --all",
     "test:geometry": "node tools/landmark-geometry.mjs",
+    "test:touch": "node tools/touch.mjs",
     "test:browser": "node tools/check.mjs",
     "review:landmarks": "node tools/landmark-browser.mjs"
   },

@@ -1,3 +1,4 @@
+import { createTouchControls } from './touch.js';
 // 白い地下迷宮。
 //
 // やることはひとつ。歩いて、扉を見つけること。
@@ -381,6 +382,15 @@ const keys = new Set();
 let yaw = 0, pitch = 0, bob = 0, dip = 0, sway = 0;
 let running = false, playing = false, walkedTotal = 0, openSm = 0.3;
 const sound = new Sound();
+function markWall() {
+  const r = toggleMark();
+  if (r) { sound.scratch(r === 'draw'); toast(r === 'draw' ? '刻んだ' : '消した'); }
+}
+const touch = createTouchControls({
+  look(dx, dy) { yaw -= dx; pitch = Math.max(-1.52, Math.min(1.52, pitch - dy)); },
+  mark: markWall, pause,
+});
+document.addEventListener('visibilitychange', () => { if (document.hidden && playing) pause(); });
 
 function findSpawn(w) {
   for (let r = 0; r < 26; r++)
@@ -402,10 +412,8 @@ addEventListener('keydown', (e) => {
   if (keys.has(e.code)) return;
   keys.add(e.code);
   if (!playing) return;
-  if (e.code === 'KeyE') {
-    const r = toggleMark();
-    if (r) { sound.scratch(r === 'draw'); toast(r === 'draw' ? '刻んだ' : '消した'); }
-  }
+  if (e.code === 'KeyE') markWall();
+  if (e.code === 'Escape') pause();
 });
 addEventListener('keyup', (e) => keys.delete(e.code));
 addEventListener('blur', () => keys.clear());
@@ -420,7 +428,7 @@ addEventListener('mousemove', (e) => {
 
 document.addEventListener('pointerlockchange', () => {
   const locked = document.pointerLockElement === canvas;
-  if (!locked && playing) pause();
+  if (!locked && playing && !touch.enabled) pause();
 });
 
 let toastT = 0;
@@ -449,18 +457,19 @@ function frame(now) {
 
 function update(dt) {
   // 向き
+  yaw -= touch.state.turn * 1.8 * dt;
   head.rotation.set(0, yaw, 0);
   camera.rotation.set(pitch, 0, 0);
 
   // 進みたい方向
-  const f = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
+  const f = touch.state.dash ? 1 : touch.state.forward + (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
   const r = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
-  running = keys.has('ShiftLeft') || keys.has('ShiftRight');
+  running = touch.state.dash || keys.has('ShiftLeft') || keys.has('ShiftRight');
   let wx = 0, wz = 0;
   if (f || r) {
     const sy = Math.sin(yaw), cy = Math.cos(yaw);
     let dx = -sy * f + cy * r, dz = -cy * f - sy * r;
-    const l = Math.hypot(dx, dz); dx /= l; dz /= l;
+    const l = Math.max(1, Math.hypot(dx, dz)); dx /= l; dz /= l;
     const sp = running ? RUN : WALK;
     wx = dx * sp; wz = dz * sp;
   }
@@ -475,7 +484,7 @@ function update(dt) {
     if (body.gny > 0.02) {
       body.vy = -(body.vx * body.gnx + body.vz * body.gnz) / body.gny - 0.5;
     }
-    if (keys.has('Space')) { body.vy = JUMP; body.grounded = false; }
+    if (keys.has('Space') || touch.state.jump) { body.vy = JUMP; body.grounded = false; }
   }
 
   const px = body.x, py = body.y, pz = body.z;
@@ -578,6 +587,7 @@ function yawSet(y, p) { yaw = y; pitch = p; }
 
 // ── 始まりと終わり ───────────────────────────────────────
 function setupWorld(seed) {
+  keys.clear(); touch.reset();
   clearWorld();
   world = new World(seed);
   cleared = false; walkedTotal = 0; bob = 0; dip = 0;
@@ -611,12 +621,17 @@ function begin() {
   $('hud').hidden = false;
   $('clear').hidden = true;
   sound.start(); sound.resume();
-  canvas.requestPointerLock?.();
+  touch.show(true);
+  if (!touch.enabled) {
+    try { canvas.requestPointerLock?.()?.catch(() => {}); } catch {}
+  }
   last = performance.now();
 }
 
 function pause() {
   playing = false;
+  touch.show(false);
+  document.exitPointerLock?.();
   $('overlay').classList.remove('hide');
   $('start').textContent = 'つづける';
   sound.suspend();
@@ -625,6 +640,7 @@ function pause() {
 
 function doClear() {
   cleared = true; playing = false;
+  keys.clear(); touch.show(false);
   document.exitPointerLock?.();
   sound.clear();
   $('hud').hidden = true;
@@ -689,6 +705,7 @@ requestAnimationFrame(frame);
 // 開発中の覗き窓。ブラウザの外から様子を見るのに使う。
 window.__wb = {
   body, scene, renderer, camera,
+  get touchInput() { return { ...touch.state }; },
   get playing() { return playing; },
   get world() { return world; },
   get chunks() { return loaded.size; },
